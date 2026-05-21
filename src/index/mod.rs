@@ -15,8 +15,16 @@ static REGISTER_VEC: Once = Once::new();
 
 fn register_sqlite_vec() {
     REGISTER_VEC.call_once(|| unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
+        type SqliteAutoExtFn = unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *mut i8,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> i32;
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            SqliteAutoExtFn,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
         )));
     });
 }

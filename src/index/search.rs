@@ -114,14 +114,14 @@ pub fn keyword(
     }
 
     // Column layout must match map_hit (16 cols) followed by bm25 rank.
-    let mut sql = format!(
+    let mut sql =
         "SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt, s.file_path,
                 s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
                 s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                 bm25(sessions_fts) AS rank
          FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
          WHERE sessions_fts MATCH ?"
-    );
+            .to_string();
     if cwd_only {
         sql.push_str(" AND s.cwd = ?");
     }
@@ -157,7 +157,12 @@ pub fn keyword(
             h
         })
         .collect();
-    scored.sort_by(|a, b| b.scores.keyword.partial_cmp(&a.scores.keyword).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.scores
+            .keyword
+            .partial_cmp(&a.scores.keyword)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit);
 
     Ok(annotate(scored, cwd_s.as_deref()))
@@ -170,8 +175,7 @@ fn sanitize_fts_query(q: &str) -> String {
 }
 
 /// Columns expected (in this exact order) by `map_hit`.
-const HIT_COLS: &str =
-    "session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path, \
+const HIT_COLS: &str = "session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path, \
      git_branch, pr_number, pr_url, pr_repo, project_dir, \
      tokens_input, tokens_output, tokens_cache_read, tokens_cache_create";
 
@@ -261,8 +265,7 @@ pub fn vector(
 /// Merge keyword and vector hits, deduping by session_id (keyword wins). The
 /// returned vector keeps keyword hits first, then vector-only hits.
 pub fn merge(mut kw: Vec<Hit>, vec_hits: Vec<Hit>) -> Vec<Hit> {
-    let seen: std::collections::HashSet<String> =
-        kw.iter().map(|h| h.session_id.clone()).collect();
+    let seen: std::collections::HashSet<String> = kw.iter().map(|h| h.session_id.clone()).collect();
     for mut h in vec_hits {
         if seen.contains(&h.session_id) {
             continue;

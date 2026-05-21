@@ -40,7 +40,7 @@ pub fn embed_batch(texts: &[String]) -> Result<Vec<Vec<f32>>> {
     }
     let lock = model()?;
     let m = lock.lock().expect("model poisoned");
-    Ok(m.embed(texts.to_vec(), None)?)
+    m.embed(texts.to_vec(), None)
 }
 
 /// Generate embeddings for all sessions whose `embedded_at IS NULL` and store
@@ -72,7 +72,7 @@ pub fn refresh_embeddings(
         let vectors = embed_batch(&texts)?;
 
         let tx = conn.transaction()?;
-        for ((session_id, _), v) in chunk.iter().zip(vectors.into_iter()) {
+        for ((session_id, _), v) in chunk.iter().zip(vectors) {
             // Replace any existing vector row.
             let _ = tx.execute(
                 "DELETE FROM sessions_vec WHERE session_id = ?",

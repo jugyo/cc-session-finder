@@ -13,7 +13,11 @@ mod template;
 mod tui;
 
 #[derive(Debug, Parser)]
-#[command(name = "cc-session-finder", version, about = "Fast finder for Claude Code sessions")]
+#[command(
+    name = "cc-session-finder",
+    version,
+    about = "Fast finder for Claude Code sessions"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -208,7 +212,10 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
     let _ = fmt()
-        .with_env_filter(EnvFilter::try_from_env("CC_SESSION_FINDER_LOG").unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_env("CC_SESSION_FINDER_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .with_writer(std::io::stderr)
         .try_init();
 }

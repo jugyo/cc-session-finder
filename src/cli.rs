@@ -60,25 +60,48 @@ pub fn run_search(args: SearchArgs, reindex: bool, no_vector: bool) -> Result<Ex
     let want_vec = matches!(args.mode, SearchMode::Vector | SearchMode::Both) && !no_vector;
 
     let kw_hits = if want_kw {
-        index::search::keyword(&conn, &args.query, cwd.as_deref(), args.cwd_only, args.limit)?
+        index::search::keyword(
+            &conn,
+            &args.query,
+            cwd.as_deref(),
+            args.cwd_only,
+            args.limit,
+        )?
     } else {
         Vec::new()
     };
 
     let vec_hits = if want_vec {
-        run_vector_search(&conn, &args.query, cwd.as_deref(), args.cwd_only, args.limit)
-            .unwrap_or_else(|e| {
-                tracing::warn!("vector search failed: {e}");
-                Vec::new()
-            })
+        run_vector_search(
+            &conn,
+            &args.query,
+            cwd.as_deref(),
+            args.cwd_only,
+            args.limit,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("vector search failed: {e}");
+            Vec::new()
+        })
     } else {
         Vec::new()
     };
 
     let hits = index::search::merge(kw_hits, vec_hits);
-    let hits = if hits.len() > args.limit { hits[..args.limit].to_vec() } else { hits };
+    let hits = if hits.len() > args.limit {
+        hits[..args.limit].to_vec()
+    } else {
+        hits
+    };
 
-    write_results(&hits, Some(&args.query), cwd.as_deref(), args.format, start, &conn)?;
+    write_results(
+        &hits,
+        Some(&args.query),
+        cwd.as_deref(),
+        args.format,
+        start,
+        &conn,
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -130,11 +153,8 @@ pub fn run_index(args: IndexArgs, reindex_top: bool) -> Result<ExitCode> {
     } else {
         Box::new(StderrProgress::default())
     };
-    let stats = index::ingest::scan_and_update(
-        &mut conn,
-        args.reindex || reindex_top,
-        progress.as_ref(),
-    )?;
+    let stats =
+        index::ingest::scan_and_update(&mut conn, args.reindex || reindex_top, progress.as_ref())?;
     if !args.quiet && !args.progress_json {
         eprintln!(
             "indexed {} files (upserted {}, deleted {}, total {})",
@@ -223,8 +243,14 @@ fn write_results(
                 results: hits,
                 stats: OutputStats {
                     total_sessions,
-                    keyword_hits: hits.iter().filter(|h| h.labels.iter().any(|l| l == "keyword")).count(),
-                    vector_hits: hits.iter().filter(|h| h.labels.iter().any(|l| l == "semantic")).count(),
+                    keyword_hits: hits
+                        .iter()
+                        .filter(|h| h.labels.iter().any(|l| l == "keyword"))
+                        .count(),
+                    vector_hits: hits
+                        .iter()
+                        .filter(|h| h.labels.iter().any(|l| l == "semantic"))
+                        .count(),
                     took_ms: start.elapsed().as_millis(),
                 },
             };
@@ -294,7 +320,8 @@ impl Progress for StderrProgress {
         let last = self.last_pct.load(std::sync::atomic::Ordering::Relaxed);
         if pct >= last + 5 {
             eprintln!("scanning {}/{} ({}%)", done, total, pct);
-            self.last_pct.store(pct, std::sync::atomic::Ordering::Relaxed);
+            self.last_pct
+                .store(pct, std::sync::atomic::Ordering::Relaxed);
         }
     }
     fn on_done(&self, s: &IngestStats) {
@@ -308,7 +335,11 @@ impl Progress for StderrProgress {
 struct JsonProgress;
 impl Progress for JsonProgress {
     fn on_total(&self, total: u32) {
-        let _ = writeln!(io::stderr(), "{}", serde_json::json!({"event":"start","total":total}));
+        let _ = writeln!(
+            io::stderr(),
+            "{}",
+            serde_json::json!({"event":"start","total":total})
+        );
     }
     fn on_file(&self, done: u32, total: u32, current: &std::path::Path) {
         let _ = writeln!(

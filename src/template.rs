@@ -26,10 +26,7 @@ pub enum Part {
     /// Render `inner` only if `field` is non-empty for this hit.
     When { field: Field, inner: Vec<Part> },
     /// Consume the remaining width up to the soft cap for the row.
-    Flex {
-        field: Field,
-        style: Style,
-    },
+    Flex { field: Field, style: Style },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +61,10 @@ pub fn render(parts: &[Part], hit: &Hit, total_width: u16) -> Vec<Span<'static>>
     }
 
     // Second pass: compute remaining for Flex fields and finalize spans.
-    let flex_count = sketch.iter().filter(|x| matches!(x, SpanOrFlex::Flex(_, _))).count();
+    let flex_count = sketch
+        .iter()
+        .filter(|x| matches!(x, SpanOrFlex::Flex(_, _)))
+        .count();
     let remaining = total_width.saturating_sub(consumed);
     let per_flex = if flex_count > 0 {
         remaining / flex_count as u16
@@ -96,7 +96,11 @@ fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16) {
             *consumed = consumed.saturating_add(UnicodeWidthStr::width(*s) as u16);
             out.push(SpanOrFlex::Span(Span::styled((*s).to_string(), *style)));
         }
-        Part::Field { field, style, max_width } => {
+        Part::Field {
+            field,
+            style,
+            max_width,
+        } => {
             let raw = render_field(*field, hit).unwrap_or_default();
             let trimmed = match max_width {
                 Some(w) => truncate_to_width(&raw, *w),
@@ -109,11 +113,17 @@ fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16) {
             for lab in &hit.labels {
                 let (text, color) = label_style(lab);
                 *consumed = consumed.saturating_add(UnicodeWidthStr::width(text.as_str()) as u16);
-                out.push(SpanOrFlex::Span(Span::styled(text, Style::default().fg(color))));
+                out.push(SpanOrFlex::Span(Span::styled(
+                    text,
+                    Style::default().fg(color),
+                )));
             }
         }
         Part::When { field, inner } => {
-            if render_field(*field, hit).map(|s| !s.is_empty()).unwrap_or(false) {
+            if render_field(*field, hit)
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+            {
                 for p in inner {
                     emit(p, hit, out, consumed);
                 }
@@ -244,39 +254,70 @@ pub fn default_row_template() -> Vec<Part> {
     vec![
         Part::Labels,
         Part::Literal("  ", Style::default()),
-        Part::Field { field: Field::Age, style: age, max_width: Some(5) },
+        Part::Field {
+            field: Field::Age,
+            style: age,
+            max_width: Some(5),
+        },
         Part::Literal("  ", Style::default()),
-        Part::Field { field: Field::Tokens, style: dim, max_width: Some(7) },
+        Part::Field {
+            field: Field::Tokens,
+            style: dim,
+            max_width: Some(7),
+        },
         Part::Literal("  ", Style::default()),
-        Part::Field { field: Field::Project, style: project, max_width: Some(28) },
+        Part::Field {
+            field: Field::Project,
+            style: project,
+            max_width: Some(28),
+        },
         Part::Literal("  ", Style::default()),
-        Part::Field { field: Field::Title, style: title, max_width: Some(40) },
+        Part::Field {
+            field: Field::Title,
+            style: title,
+            max_width: Some(40),
+        },
         Part::When {
             field: Field::PromptOneLine,
             inner: vec![
                 Part::Literal(" — ", sep),
-                Part::Flex { field: Field::PromptOneLine, style: muted },
+                Part::Flex {
+                    field: Field::PromptOneLine,
+                    style: muted,
+                },
             ],
         },
         Part::When {
             field: Field::Branch,
             inner: vec![
                 Part::Literal("  ", Style::default()),
-                Part::Field { field: Field::Branch, style: dim, max_width: Some(20) },
+                Part::Field {
+                    field: Field::Branch,
+                    style: dim,
+                    max_width: Some(20),
+                },
             ],
         },
         Part::When {
             field: Field::Pr,
             inner: vec![
                 Part::Literal("  ", Style::default()),
-                Part::Field { field: Field::Pr, style: dim, max_width: Some(30) },
+                Part::Field {
+                    field: Field::Pr,
+                    style: dim,
+                    max_width: Some(30),
+                },
             ],
         },
         Part::When {
             field: Field::WorktreeTag,
             inner: vec![
                 Part::Literal(" ", Style::default()),
-                Part::Field { field: Field::WorktreeTag, style: dim, max_width: Some(6) },
+                Part::Field {
+                    field: Field::WorktreeTag,
+                    style: dim,
+                    max_width: Some(6),
+                },
             ],
         },
     ]

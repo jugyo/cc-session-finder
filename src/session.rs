@@ -228,4 +228,3 @@ pub fn build_preview(meta: &SessionMeta) -> String {
     }
     s
 }
-

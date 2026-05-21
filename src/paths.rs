@@ -81,7 +81,10 @@ mod tests {
 
     #[test]
     fn encodes_hidden_dir() {
-        assert_eq!(encode_cwd(Path::new("/Users/jugyo/.claude")), "-Users-jugyo--claude");
+        assert_eq!(
+            encode_cwd(Path::new("/Users/jugyo/.claude")),
+            "-Users-jugyo--claude"
+        );
     }
 
     #[test]

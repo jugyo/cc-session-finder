@@ -44,7 +44,13 @@ pub fn scan_and_update(
     let mut known: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
     {
         let mut q = conn.prepare("SELECT session_id, mtime, size FROM sessions")?;
-        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
+        let rows = q.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
         for r in rows {
             let (id, mt, sz) = r?;
             known.insert(id, (mt, sz));
@@ -78,10 +84,11 @@ pub fn scan_and_update(
             .unwrap_or(0);
         let size = md.len() as i64;
 
-        let stale = reindex || match known.get(&id) {
-            Some((m, s)) => *m != mtime || *s != size,
-            None => true,
-        };
+        let stale = reindex
+            || match known.get(&id) {
+                Some((m, s)) => *m != mtime || *s != size,
+                None => true,
+            };
         if !stale {
             continue;
         }
@@ -172,10 +179,8 @@ fn list_session_files() -> Result<Vec<PathBuf>> {
     let root = crate::paths::projects_root();
     let pattern = format!("{}/*/*.jsonl", root.to_string_lossy());
     let mut out = Vec::new();
-    for entry in glob::glob(&pattern)? {
-        if let Ok(p) = entry {
-            out.push(p);
-        }
+    for p in glob::glob(&pattern)?.flatten() {
+        out.push(p);
     }
     Ok(out)
 }

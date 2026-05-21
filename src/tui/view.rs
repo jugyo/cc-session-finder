@@ -32,9 +32,10 @@ pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
 fn draw_query_box(f: &mut Frame, area: Rect, state: &AppState, tick: usize) {
     let q = state.editor.query();
 
-    let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled("> ", Style::default().fg(Color::Cyan)));
-    spans.push(Span::raw(q));
+    let spans: Vec<Span> = vec![
+        Span::styled("> ", Style::default().fg(Color::Cyan)),
+        Span::raw(q),
+    ];
 
     let block = Block::default().borders(Borders::ALL).title("search");
     let p = Paragraph::new(Line::from(spans)).block(block.clone());
@@ -117,4 +118,3 @@ fn draw_status_bar(f: &mut Frame, area: Rect, _state: &AppState, _tick: usize) {
     let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
     f.render_widget(p, area);
 }
-

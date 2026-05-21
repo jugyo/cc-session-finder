@@ -13,7 +13,10 @@ pub fn resume(hit: &Hit) -> Result<()> {
     if cwd.is_dir() {
         std::env::set_current_dir(&cwd).with_context(|| format!("chdir {}", cwd.display()))?;
     } else {
-        tracing::warn!("session cwd {} does not exist; running in current dir", cwd.display());
+        tracing::warn!(
+            "session cwd {} does not exist; running in current dir",
+            cwd.display()
+        );
     }
 
     // `exec` replaces the current process with `claude` on success.

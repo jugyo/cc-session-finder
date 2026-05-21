@@ -29,7 +29,7 @@ impl Progress for ChanProgress {
         let _ = self.0.send(Phase::Scanning { done: 0, total });
     }
     fn on_file(&self, done: u32, total: u32, _current: &Path) {
-        if done % 8 == 0 || done + 1 == total {
+        if done.is_multiple_of(8) || done + 1 == total {
             let _ = self.0.send(Phase::Scanning { done, total });
         }
     }

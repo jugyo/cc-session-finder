@@ -191,7 +191,10 @@ fn run_loop(
                         if let Ok(hits) = vector_search_in_worker(&q_owned, cwd.as_deref()) {
                             // Only send if we are still the latest.
                             if token == token_ref.load(std::sync::atomic::Ordering::SeqCst) {
-                                let _ = tx2.send(UiEvent::VectorResults { query: q_owned, hits });
+                                let _ = tx2.send(UiEvent::VectorResults {
+                                    query: q_owned,
+                                    hits,
+                                });
                             }
                         }
                     });
@@ -214,7 +217,7 @@ fn vector_search_in_worker(_query: &str, _cwd: Option<&std::path::Path>) -> Resu
 
 enum Action {
     Exit(u8),
-    Resume(Hit),
+    Resume(Box<Hit>),
     QueryChanged(String),
 }
 
@@ -243,7 +246,7 @@ fn handle_event(ev: Event, state: &mut AppState) -> Result<Option<Action>> {
             }
             KeyCode::Enter => {
                 if let Some(h) = state.results.get(state.selected).cloned() {
-                    return Ok(Some(Action::Resume(h)));
+                    return Ok(Some(Action::Resume(Box::new(h))));
                 }
                 return Ok(None);
             }
@@ -352,9 +355,9 @@ fn refresh_results(conn: &Arc<Mutex<rusqlite::Connection>>, state: &mut AppState
     let cwd = state.cwd.clone();
     let conn = conn.lock().expect("conn poisoned");
     state.keyword_results = if q.trim().is_empty() {
-        index::search::list(&*conn, cwd.as_deref(), false, None, 100)?
+        index::search::list(&conn, cwd.as_deref(), false, None, 100)?
     } else {
-        index::search::keyword(&*conn, &q, cwd.as_deref(), false, 100)?
+        index::search::keyword(&conn, &q, cwd.as_deref(), false, 100)?
     };
     rebuild_results(state);
     Ok(())
