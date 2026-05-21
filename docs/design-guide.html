@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-session-finder 設計ガイド</title>
+<style>
+:root {
+  --bg: #fafafa;
+  --fg: #1a1a2e;
+  --accent: #2563eb;
+  --accent-light: #dbeafe;
+  --border: #e2e8f0;
+  --code-bg: #f1f5f9;
+  --success: #16a34a;
+  --warn: #d97706;
+  --error: #dc2626;
+  --muted: #64748b;
+  --card-bg: #ffffff;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.7;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+h1 { font-size: 1.8rem; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 2px solid var(--accent); }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; margin-bottom: 0.5rem; }
+p { margin-bottom: 1rem; }
+a { color: var(--accent); text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+
+code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; overflow-x: auto; margin-bottom: 1.2rem; font-size: 0.85rem; line-height: 1.6; }
+pre code { background: none; padding: 0; }
+
+.subtitle { color: var(--muted); font-size: 1rem; margin-bottom: 2rem; }
+
+#app > .page { animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+nav.page-nav { display: flex; justify-content: space-between; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.9rem; }
+nav.breadcrumb { font-size: 0.85rem; color: var(--muted); margin-bottom: 1.5rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+
+.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
+.card h3 { margin-top: 0; }
+
+.diagram { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; overflow-x: auto; font-size: 0.88rem; }
+
+.er-diagram { display: flex; flex-wrap: wrap; gap: 1.2rem; align-items: flex-start; }
+.er-entity { border: 2px solid var(--border); border-radius: 8px; min-width: 200px; flex: 1; }
+.er-entity.highlight { border-color: var(--accent); }
+.er-entity-header { background: var(--code-bg); padding: 0.5rem 0.75rem; font-weight: 700; font-size: 0.82rem; border-bottom: 2px solid var(--border); border-radius: 6px 6px 0 0; }
+.er-entity.highlight .er-entity-header { background: var(--accent-light); border-color: var(--accent); }
+.er-entity-body { padding: 0.5rem 0.75rem; font-size: 0.82rem; font-family: monospace; line-height: 1.8; }
+.er-entity-note { padding: 0.4rem 0.75rem; font-size: 0.78rem; color: var(--muted); border-top: 1px dashed var(--border); }
+.er-relation { display: flex; align-items: center; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 0 0.5rem; flex-shrink: 0; }
+
+.hflow { display: flex; align-items: center; gap: 0; flex-wrap: wrap; justify-content: center; }
+.hflow-box { border: 2px solid var(--border); border-radius: 8px; padding: 0.6rem 1rem; text-align: center; font-size: 0.82rem; background: var(--card-bg); min-width: 100px; }
+.hflow-box.accent { border-color: var(--accent); background: var(--accent-light); }
+.hflow-box.warn { border-color: var(--warn); background: #fef3c7; }
+.hflow-box.error { border-color: var(--error); background: #fee2e2; }
+.hflow-arrow { font-size: 1.2rem; color: var(--muted); padding: 0 0.4rem; flex-shrink: 0; }
+.hflow-label { font-size: 0.75rem; color: var(--muted); text-align: center; max-width: 120px; }
+
+.vflow { display: flex; flex-direction: column; align-items: center; gap: 0; }
+.vflow-arrow { font-size: 1.2rem; color: var(--muted); text-align: center; padding: 0.2rem 0; }
+.vflow-arrow-label { font-size: 0.75rem; color: var(--muted); }
+
+.timeline { display: grid; grid-template-columns: auto 1fr auto; gap: 0.3rem 1rem; font-size: 0.85rem; align-items: center; }
+.timeline-time { font-family: monospace; font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+.timeline-event { padding: 0.4rem 0; }
+.timeline-status { text-align: right; }
+.timeline-divider { grid-column: 1 / -1; border-top: 1px dashed var(--border); margin: 0.2rem 0; }
+
+.branch-label { font-size: 0.82rem; margin-bottom: 0.3rem; }
+
+.status { display: inline-block; padding: 0.15em 0.55em; border-radius: 5px; font-size: 0.8rem; font-weight: 600; font-family: 'SF Mono', monospace; }
+.status.scheduled { background: var(--accent-light); color: var(--accent); }
+.status.disabled { background: #f1f5f9; color: var(--muted); }
+.status.processing { background: #fef3c7; color: var(--warn); }
+.status.done { background: #dcfce7; color: var(--success); }
+.status.error { background: #fee2e2; color: var(--error); }
+
+.toc { list-style: none; counter-reset: toc-counter; }
+.toc li { counter-increment: toc-counter; margin-bottom: 0.6rem; }
+.toc li a { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.6rem 1rem; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; transition: border-color 0.15s; }
+.toc li a:hover { border-color: var(--accent); text-decoration: none; }
+.toc li a::before { content: counter(toc-counter); display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; background: var(--accent); color: #fff; border-radius: 50%; font-size: 0.8rem; font-weight: 700; flex-shrink: 0; }
+.toc .desc { display: block; font-size: 0.82rem; color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; margin-bottom: 1.2rem; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); }
+th { font-weight: 600; background: var(--code-bg); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+
+.callout { border-left: 4px solid var(--accent); padding: 0.8rem 1.2rem; margin: 1.2rem 0; background: var(--accent-light); border-radius: 0 8px 8px 0; font-size: 0.92rem; }
+.callout.warn { border-color: var(--warn); background: #fef3c7; }
+.callout.error { border-color: var(--error); background: #fee2e2; }
+.callout strong { display: block; margin-bottom: 0.2rem; }
+
+ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+li { margin-bottom: 0.35rem; }
+
+.flow-steps { list-style: none; padding-left: 0; counter-reset: flow; }
+.flow-steps > li { counter-increment: flow; position: relative; padding: 0.8rem 1rem 0.8rem 3.2rem; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.5rem; }
+.flow-steps > li::before { content: counter(flow); position: absolute; left: 0.8rem; top: 0.8rem; display: inline-flex; align-items: center; justify-content: center; width: 1.5em; height: 1.5em; background: var(--accent); color: #fff; border-radius: 50%; font-size: 0.78rem; font-weight: 700; }
+.flow-steps > li + li::after { content: ''; position: absolute; left: 1.5rem; top: -0.55rem; width: 2px; height: 0.55rem; background: var(--border); }
+
+.progress-bar { position: fixed; top: 0; left: 0; right: 0; height: 3px; background: var(--border); z-index: 100; }
+.progress-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+</style>
+</head>
+<body>
+
+<div class="progress-bar"><div class="progress-bar-fill" id="progress"></div></div>
+<div id="app"></div>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- 目次ページ                                                   -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-toc">
+<div class="page">
+  <h1>cc-session-finder 設計ガイド</h1>
+  <p class="subtitle">Claude Code セッションの高速ファインダー &mdash; アーキテクチャを読み解く</p>
+  <p>
+    <code>cc-session-finder</code> は <code>~/.claude/projects/*/*.jsonl</code> をインデックス化して、
+    キーワード検索とセマンティック検索の両方で過去のセッションを呼び戻すための Rust 製ツールです。
+    このガイドではコードベース全体の設計判断を、データの流れに沿って順に追っていきます。
+  </p>
+  <p>
+    対象読者: Rust と SQLite に多少の知識がある人。
+    フルテキスト検索 (FTS5) やベクトル検索の仕組み自体は本文で必要な範囲を補足します。
+  </p>
+
+  <h2>目次</h2>
+  <ol class="toc">
+    <li><a href="#ch1"><span>全体像とモジュール構成<span class="desc">レイヤーとファイルの責務</span></span></a></li>
+    <li><a href="#ch2"><span>データフロー: JSONL からインデックスへ<span class="desc">セッションファイルが SQLite に届くまで</span></span></a></li>
+    <li><a href="#ch3"><span>SQLite スキーマ<span class="desc">sessions / sessions_fts / sessions_vec</span></span></a></li>
+    <li><a href="#ch4"><span>インジェスト戦略<span class="desc">差分検出と Progress トレイト</span></span></a></li>
+    <li><a href="#ch5"><span>検索戦略<span class="desc">FTS5 trigram + KNN + merge</span></span></a></li>
+    <li><a href="#ch6"><span>TUI のイベントループ<span class="desc">スレッドと mpsc チャネル</span></span></a></li>
+    <li><a href="#ch7"><span>テンプレートレンダリング<span class="desc">行を Span 配列に組み立てる</span></span></a></li>
+    <li><a href="#ch8"><span>CLI と起動<span class="desc">サブコマンドと exec claude --resume</span></span></a></li>
+  </ol>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch1: 全体像とモジュール構成                                   -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch1">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 1. 全体像とモジュール構成</nav>
+  <h1>1. 全体像とモジュール構成</h1>
+  <p class="subtitle">レイヤーとファイルの責務</p>
+
+  <h2>レイヤーで眺める</h2>
+  <p>
+    コードは大きく 4 層に分かれています。下層から積み上がるシンプルな依存関係で、
+    上層は下層だけを参照します (逆方向は存在しません)。
+  </p>
+
+  <div class="diagram">
+    <div class="vflow">
+      <div class="hflow-box" style="min-width:280px">フロントエンド (TUI / CLI)<br><code>tui/*</code>, <code>cli.rs</code>, <code>main.rs</code></div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box accent" style="min-width:280px">レンダリング &amp; 起動<br><code>template.rs</code>, <code>launch.rs</code>, <code>relative_time.rs</code></div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box" style="min-width:280px;border-color:var(--success);background:#dcfce7">インデックス &amp; 検索<br><code>index/{schema,ingest,search,embed}.rs</code></div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box" style="min-width:280px">パース &amp; パス<br><code>session.rs</code>, <code>paths.rs</code></div>
+    </div>
+  </div>
+
+  <h2>ファイル一覧</h2>
+  <table>
+    <thead><tr><th>パス</th><th>役割</th></tr></thead>
+    <tbody>
+      <tr><td><code>main.rs</code></td><td>clap でサブコマンドを定義してディスパッチ。TTY 判定で TUI へフォールバック。</td></tr>
+      <tr><td><code>cli.rs</code></td><td>非対話の <code>search</code>/<code>list</code>/<code>show</code>/<code>index</code>/<code>resume</code> サブコマンドと、出力フォーマット (JSON/TSV/IDs)。</td></tr>
+      <tr><td><code>tui/mod.rs</code></td><td>TUI のエントリポイント。</td></tr>
+      <tr><td><code>tui/app.rs</code></td><td>イベントループ、スレッド管理、状態 (<code>AppState</code>)、デバウンス。</td></tr>
+      <tr><td><code>tui/input.rs</code></td><td>マルチバイト安全な行エディタ (<code>QueryEditor</code>)。</td></tr>
+      <tr><td><code>tui/view.rs</code></td><td>ratatui の <code>Frame</code> 描画。クエリボックス / 結果リスト / ステータスバー。</td></tr>
+      <tr><td><code>index/mod.rs</code></td><td>SQLite 接続のセットアップと <code>sqlite-vec</code> 拡張の登録。</td></tr>
+      <tr><td><code>index/schema.rs</code></td><td>テーブル/トリガ/仮想テーブルの DDL と <code>user_version</code> マイグレーション。</td></tr>
+      <tr><td><code>index/ingest.rs</code></td><td>ファイル走査と差分検出 UPSERT。<code>Progress</code> トレイト経由で進捗を通知。</td></tr>
+      <tr><td><code>index/search.rs</code></td><td>SQL クエリ (FTS5 / KNN / list) と <code>Hit</code> 型、スコアリング、merge。</td></tr>
+      <tr><td><code>index/embed.rs</code></td><td>fastembed (Paraphrase ML MiniLM-L12-v2) による埋め込み生成と KNN 呼び出し。</td></tr>
+      <tr><td><code>session.rs</code></td><td>JSONL ストリームを順次パースして <code>SessionMeta</code> を抽出。</td></tr>
+      <tr><td><code>paths.rs</code></td><td>Claude が使う <code>cwd &harr; project_dir</code> エンコーディングと既定ディレクトリ。</td></tr>
+      <tr><td><code>template.rs</code></td><td>行レイアウト DSL: <code>Part</code> / <code>Field</code> / <code>Flex</code>。2-pass で幅を確定。</td></tr>
+      <tr><td><code>launch.rs</code></td><td>セッションの <code>cwd</code> に chdir して <code>claude --resume</code> を <code>exec</code>。</td></tr>
+      <tr><td><code>relative_time.rs</code></td><td>相対時刻 (<code>3h</code>/<code>2d</code>) と数値略記 (<code>1.2k</code>/<code>49.2M</code>)。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>同心円の依存関係</h2>
+  <p>
+    UI 層は SQLite を直接叩かず、<code>index::search</code> / <code>index::ingest</code> 経由でアクセスします。
+    パース層 (<code>session.rs</code>) は SQL を知らず、純粋に JSONL → 構造体への変換だけを担当します。
+    この分離があるため、CLI のサブコマンドと TUI が同じ <code>search</code> / <code>ingest</code> モジュールを共有できます。
+  </p>
+
+  <div class="callout"><strong>設計上の含意</strong>
+    TUI と CLI は別々の "アプリ" ですが、データ層を共有することで「TUI でしかできない」「CLI でしかできない」ことを最小化しています。
+    たとえばインデックス更新は両方から呼ばれます。
+  </div>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>上から TUI/CLI &rarr; テンプレ/起動 &rarr; index &rarr; パース/パスの 4 層</li>
+      <li>JSONL のパースは SQL から、SQL は UI から独立している</li>
+      <li>TUI と CLI は <code>index</code> モジュールを共有し、検索パスは同一</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch2: データフロー                                            -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch2">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 2. データフロー</nav>
+  <h1>2. データフロー: JSONL からインデックスへ</h1>
+  <p class="subtitle">セッションファイルが SQLite に届くまで</p>
+
+  <h2>全体像</h2>
+  <div class="diagram">
+    <div class="vflow">
+      <div class="hflow-box">~/.claude/projects/&lt;encoded-cwd&gt;/&lt;session_id&gt;.jsonl</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">glob で列挙 &mdash; <code>list_session_files()</code></div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box accent">session::extract_from_file &rarr; SessionMeta</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">差分検出 (mtime / size)</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box accent">ingest::upsert &rarr; INSERT ... ON CONFLICT</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">トリガで FTS インデックスへ伝搬</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box" style="border-color:var(--success);background:#dcfce7">sessions / sessions_fts / sessions_vec</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">非同期で埋め込み生成</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box">embed::refresh_embeddings &rarr; 384-dim ベクトル</div>
+    </div>
+  </div>
+
+  <h2>JSONL の中身</h2>
+  <p>
+    Claude Code は各セッションを 1 行 1 メッセージの JSONL で記録します。<code>session.rs</code> はこのストリームを 1 行ずつパースして、いくつかの <code>type</code> から関心のあるフィールドだけを抜き出します。
+  </p>
+  <table>
+    <thead><tr><th><code>type</code></th><th>抽出する情報</th></tr></thead>
+    <tbody>
+      <tr><td><code>ai-title</code></td><td><code>aiTitle</code> &rarr; <code>ai_title</code> (AI が付けたセッション名)</td></tr>
+      <tr><td><code>user</code></td><td><code>cwd</code>, <code>gitBranch</code>, 最初の有効なユーザー発話 (<code>first_prompt</code>); msg_count++</td></tr>
+      <tr><td><code>assistant</code></td><td><code>cwd</code>, <code>gitBranch</code>, トークン消費 (<code>message.usage</code>); msg_count++</td></tr>
+      <tr><td><code>pr-link</code></td><td><code>prNumber</code> / <code>prUrl</code> / <code>prRepository</code> &mdash; 最後に出てきたものが勝つ</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout"><strong>ノイズ除去</strong>
+    最初のユーザー発話は <code>&lt;ide_opened_file&gt;</code> や <code>&lt;system-reminder&gt;</code> といったエディタ起動時の自動メッセージを除外します (<code>is_noise</code>)。これがないと <code>first_prompt</code> がほぼ毎回 IDE のチャタリングで埋まってしまいます。
+  </div>
+
+  <h2>SessionMeta &rarr; SQLite カラム</h2>
+  <p>
+    <code>session::extract_from_file</code> が返す <code>SessionMeta</code> は、ほぼそのまま <code>sessions</code> テーブルに座席を持ちます。
+  </p>
+  <pre><code>pub struct SessionMeta {
+    pub session_id, project_dir, cwd, ai_title, first_prompt,
+    pub msg_count, mtime, size, file_path,
+    pub git_branch, pr_number, pr_url, pr_repo,
+    pub tokens_input, tokens_output,
+    pub tokens_cache_read, tokens_cache_create,
+}</code></pre>
+
+  <h2>preview の組み立て</h2>
+  <p>
+    FTS5 でキーワード検索する対象は <code>preview = ai_title + " | " + first_prompt</code> という連結文字列です (<code>session::build_preview</code>)。
+    タイトルと最初の発話のどちらに含まれるキーワードでもヒットさせたいので、両方を 1 つの仮想カラムに束ねます。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>JSONL は 1 行ずつパースして、5 種類の <code>type</code> だけ拾う</li>
+      <li>IDE のチャタリング系メッセージは <code>first_prompt</code> から除外する</li>
+      <li>キーワード検索の本体は <code>preview = ai_title + " | " + first_prompt</code></li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch3: SQLite スキーマ                                         -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch3">
+<nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 3. SQLite スキーマ</nav>
+<div class="page">
+  <h1>3. SQLite スキーマ</h1>
+  <p class="subtitle">sessions / sessions_fts / sessions_vec</p>
+
+  <h2>3 つのテーブル</h2>
+  <p>
+    インデックス DB はキャッシュディレクトリ (<code>~/Library/Caches/cc-session-finder/index.db</code> など) に置かれ、WAL モードで運用されます。
+    主要テーブルは 3 つ &mdash; 通常テーブル 1 つと仮想テーブル 2 つ。
+  </p>
+
+  <div class="diagram">
+    <div class="er-diagram">
+      <div class="er-entity highlight">
+        <div class="er-entity-header">sessions</div>
+        <div class="er-entity-body">
+          session_id PK<br>
+          project_dir<br>
+          cwd<br>
+          ai_title, first_prompt<br>
+          preview<br>
+          mtime, size, msg_count<br>
+          file_path<br>
+          embedded_at<br>
+          git_branch, pr_*<br>
+          tokens_*
+        </div>
+        <div class="er-entity-note">通常テーブル: 全メタデータの正本</div>
+      </div>
+      <div class="er-relation">FTS</div>
+      <div class="er-entity">
+        <div class="er-entity-header">sessions_fts</div>
+        <div class="er-entity-body">
+          rowid &harr; sessions.rowid<br>
+          preview<br>
+          tokenize=trigram
+        </div>
+        <div class="er-entity-note">仮想テーブル: トリガで同期</div>
+      </div>
+    </div>
+    <div class="er-diagram" style="margin-top:1rem">
+      <div class="er-entity highlight">
+        <div class="er-entity-header">sessions</div>
+        <div class="er-entity-body">session_id PK<br>embedded_at</div>
+      </div>
+      <div class="er-relation">vec0</div>
+      <div class="er-entity">
+        <div class="er-entity-header">sessions_vec</div>
+        <div class="er-entity-body">
+          session_id PK<br>
+          embedding FLOAT[384]
+        </div>
+        <div class="er-entity-note">sqlite-vec 拡張</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>FTS5 と trigram トークナイザ</h2>
+  <p>
+    <code>sessions_fts</code> は外部コンテンツテーブル (<code>content='sessions'</code>) として作成され、本体は <code>preview</code> 列だけです。
+    トークナイザに <code>trigram</code> を選んでいるのが特徴 &mdash; 単語分割の悩み (日本語の形態素解析、CJK 連結文字列など) を回避し、3-gram の連続で部分一致を実現します。
+  </p>
+
+  <pre><code>CREATE VIRTUAL TABLE sessions_fts USING fts5(
+    preview,
+    content='sessions',
+    content_rowid='rowid',
+    tokenize='trigram'
+);</code></pre>
+
+  <p>
+    検索クエリ側 (<code>search::sanitize_fts_query</code>) は二重引用符で囲んでフレーズとして渡します。
+    trigram トークナイザでは「フレーズ = 3-gram 列の連続」となり、結果として「部分文字列マッチに近いふるまい」が得られます。
+  </p>
+
+  <h2>同期トリガ</h2>
+  <p>
+    <code>sessions</code> への INSERT/UPDATE/DELETE はトリガ経由で <code>sessions_fts</code> に伝搬します。
+    アプリ側は <code>sessions</code> だけを UPSERT すれば FTS インデックスは自動で追従します。
+  </p>
+
+  <pre><code>CREATE TRIGGER sessions_ai AFTER INSERT ON sessions BEGIN
+    INSERT INTO sessions_fts(rowid, preview) VALUES (new.rowid, new.preview);
+END;
+CREATE TRIGGER sessions_au AFTER UPDATE ON sessions BEGIN
+    INSERT INTO sessions_fts(sessions_fts, rowid, preview) VALUES('delete', old.rowid, old.preview);
+    INSERT INTO sessions_fts(rowid, preview) VALUES (new.rowid, new.preview);
+END;</code></pre>
+
+  <h2>sqlite-vec によるベクトルテーブル</h2>
+  <p>
+    <code>sessions_vec</code> は <code>vec0</code> 仮想テーブルで、384 次元の <code>FLOAT[384]</code> を主キー <code>session_id</code> に紐付けて格納します。
+    <code>WHERE embedding MATCH ? AND k = ?</code> でコサイン距離による KNN が返ります。
+  </p>
+
+  <h2>スキーマバージョニング</h2>
+  <p>
+    <code>schema::ensure</code> は <code>PRAGMA user_version</code> を読み、定数 <code>SCHEMA_VERSION</code> と一致しなければ全テーブルを <code>DROP</code> して作り直します &mdash; ユーザー作業データではなく派生キャッシュなので、マイグレーションよりも作り直しを優先する設計です。
+  </p>
+
+  <div class="callout warn"><strong>注意</strong>
+    バージョンを上げると次回起動時に全インデックスが再構築されます。<code>--reset</code> フラグも同様の効果ですが、こちらは DB ファイル自体を削除します。fastembed のモデルキャッシュは別ディレクトリなので影響を受けません。
+  </div>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li><code>sessions</code> が正本、<code>sessions_fts</code> と <code>sessions_vec</code> はトリガで同期される派生</li>
+      <li>FTS5 は trigram トークナイザで、フレーズクエリ = 部分文字列マッチ</li>
+      <li>スキーマは <code>user_version</code> でバージョン管理。差分マイグレーションはなく作り直す</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch4: インジェスト戦略                                         -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch4">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 4. インジェスト戦略</nav>
+  <h1>4. インジェスト戦略</h1>
+  <p class="subtitle">差分検出と Progress トレイト</p>
+
+  <h2><code>scan_and_update</code> の流れ</h2>
+  <ol class="flow-steps">
+    <li><strong>既存行のロード</strong> &mdash; <code>SELECT session_id, mtime, size FROM sessions</code> を <code>HashMap</code> に展開</li>
+    <li><strong>ディスク上のファイルを列挙</strong> &mdash; <code>glob("~/.claude/projects/*/*.jsonl")</code></li>
+    <li><strong>1 ファイルずつ判定</strong> &mdash; (mtime, size) が一致すれば skip、それ以外はパース &rarr; UPSERT</li>
+    <li><strong>消えたセッションを削除</strong> &mdash; ディスクから消えた <code>session_id</code> を <code>sessions</code>/<code>sessions_vec</code> 両方から削除</li>
+  </ol>
+
+  <h2>差分判定の鍵</h2>
+  <div class="callout"><strong>(mtime, size) ペアが一致したらパースをスキップ</strong>
+    JSONL ファイルは追記オンリーなので、サイズが変わっていなければ過去のメッセージは更新されていません。完全な内容ハッシュより圧倒的に安いチェックです。
+  </div>
+
+  <h2>UPSERT の妙</h2>
+  <p>
+    <code>ingest::upsert</code> は <code>INSERT ... ON CONFLICT(session_id) DO UPDATE SET</code> 構文で、1 ステートメントで新規/更新を両方扱います。
+    特筆すべきは <code>embedded_at</code> の取り扱い:
+  </p>
+  <pre><code>embedded_at = CASE
+    WHEN sessions.preview &lt;&gt; excluded.preview THEN NULL
+    ELSE sessions.embedded_at
+END</code></pre>
+  <p>
+    preview が変わったときだけ <code>embedded_at</code> を NULL に戻し、次回 <code>refresh_embeddings</code> で再埋め込み対象にします。
+    内容が変わっていなければ既存のベクトルを温存します。
+  </p>
+
+  <h2>Progress トレイト</h2>
+  <p>
+    進捗通知は <code>Progress</code> トレイトに抽象化されていて、CLI と TUI で別実装を差し替えます。
+  </p>
+
+  <div class="diagram">
+    <div class="er-diagram">
+      <div class="er-entity highlight">
+        <div class="er-entity-header">trait Progress</div>
+        <div class="er-entity-body">
+          on_total(total)<br>
+          on_file(done, total, path)<br>
+          on_done(stats)
+        </div>
+      </div>
+      <div class="er-relation">impl</div>
+      <div class="er-entity">
+        <div class="er-entity-header">3 つの実装</div>
+        <div class="er-entity-body">
+          NoopProgress<br>
+          StderrProgress (CLI)<br>
+          JsonProgress (CLI --progress-json)<br>
+          ProgressChan (TUI, mpsc)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout"><strong>WAL の効用</strong>
+    WAL モードのおかげで、ワーカースレッドが UPSERT している最中も UI スレッドは検索 SELECT を実行できます。
+    インジェスト中も行がリアルタイムで増えていくのはこの並行性のおかげで、人工的なディレイは入れていません。
+  </div>
+
+  <h2>埋め込み生成 (refresh_embeddings)</h2>
+  <p>
+    インジェストが終わった後、<code>embed::refresh_embeddings</code> が <code>embedded_at IS NULL</code> の行をバッチサイズ 16 で fastembed に投げ、生成した 384 次元ベクトルを <code>sessions_vec</code> へ書き込みます。
+    モデルは <code>OnceLock&lt;Mutex&lt;TextEmbedding&gt;&gt;</code> で 1 回だけロードされ、以降は使い回されます。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>差分判定は (mtime, size) ペアのみ &mdash; 安い・追記オンリーだから十分</li>
+      <li>preview が変わったときだけ <code>embedded_at = NULL</code> にして再埋め込み</li>
+      <li><code>Progress</code> トレイトで CLI / TUI / JSON 出力を差し替える</li>
+      <li>UI のリアルタイム更新は人工的な delay ではなく WAL + 進捗イベント駆動で実現する</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch5: 検索戦略                                                -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch5">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 5. 検索戦略</nav>
+  <h1>5. 検索戦略</h1>
+  <p class="subtitle">FTS5 trigram + KNN + merge</p>
+
+  <h2>2 本のレール + 合流</h2>
+  <div class="diagram">
+    <div class="vflow">
+      <div class="hflow-box accent">クエリ文字列</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow" style="gap:2rem">
+        <div>
+          <div class="branch-label" style="text-align:center;margin-bottom:0.5rem">同期</div>
+          <div class="hflow-box" style="border-color:var(--success)">keyword<br>(FTS5 + bm25)</div>
+        </div>
+        <div>
+          <div class="branch-label" style="text-align:center;margin-bottom:0.5rem">非同期 (TUI) / 同期 (CLI)</div>
+          <div class="hflow-box" style="border-color:var(--accent)">vector<br>(KNN)</div>
+        </div>
+      </div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">merge: keyword 優先、vector は session_id で重複除去</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box">Hit のリスト (limit で truncate)</div>
+    </div>
+  </div>
+
+  <h2>キーワード検索 (FTS5)</h2>
+  <pre><code>SELECT s.*, bm25(sessions_fts) AS rank
+FROM sessions_fts
+JOIN sessions s ON s.rowid = sessions_fts.rowid
+WHERE sessions_fts MATCH ?
+ORDER BY rank LIMIT ?;</code></pre>
+  <p>
+    bm25 は <em>小さいほど良い</em> スコアなので、Rust 側で複合スコアを組み立てるときに符号を反転します。
+  </p>
+  <pre><code>let composite = -rank + cwd_boost * 2.0 + recency * 1.0;</code></pre>
+  <p>
+    つまり keyword の最終スコアは次の 3 つの和です:
+  </p>
+  <table>
+    <thead><tr><th>項</th><th>意味</th><th>重み</th></tr></thead>
+    <tbody>
+      <tr><td><code>-bm25</code></td><td>キーワード適合度</td><td>1.0</td></tr>
+      <tr><td><code>cwd_boost</code></td><td>カレントディレクトリと一致したら +1</td><td>2.0</td></tr>
+      <tr><td><code>recency</code></td><td><code>1 / (1 + ln(age_days + 1))</code></td><td>1.0</td></tr>
+    </tbody>
+  </table>
+
+  <h2>ベクトル検索</h2>
+  <ol class="flow-steps">
+    <li><strong>クエリを 384 次元に変換</strong> &mdash; <code>embed::embed_query(query)</code></li>
+    <li><strong>KNN 実行</strong> &mdash; <code>sessions_vec MATCH ? AND k = ?</code> (要求 limit の 2 倍を取って後段で削る余地を残す)</li>
+    <li><strong>session_id で <code>sessions</code> を JOIN</strong> &mdash; <code>search::show</code> を呼んで <code>Hit</code> をハイドレートする</li>
+    <li><strong><code>cwd_only</code> 適用とラベル付け</strong> &mdash; <code>labels.push("semantic")</code></li>
+  </ol>
+
+  <h2>merge ロジック</h2>
+  <p>
+    両側のヒットが揃ったら <code>search::merge</code> で 1 本にまとめます。
+  </p>
+  <ul>
+    <li>keyword 側を先に並べる (適合度が高い)</li>
+    <li>vector 側で <em>同じ session_id がまだ無いもの</em> だけを末尾に追加</li>
+    <li>追加分には <code>semantic</code> ラベルが必ず付くよう保険</li>
+  </ul>
+
+  <h2>ラベルの一覧</h2>
+  <p>
+    各 <code>Hit</code> は人間向けの <code>labels: Vec&lt;String&gt;</code> を持ち、TUI の左端に色付きで表示されます。
+  </p>
+  <table>
+    <thead><tr><th>ラベル</th><th>付く条件</th><th>UI 色</th></tr></thead>
+    <tbody>
+      <tr><td><code>cwd</code></td><td>セッションの <code>cwd</code> がカレントと一致</td><td>緑</td></tr>
+      <tr><td><code>keyword</code></td><td>FTS5 ヒット</td><td>黄</td></tr>
+      <tr><td><code>semantic</code></td><td>ベクトル KNN ヒット</td><td>シアン</td></tr>
+      <tr><td><code>recent</code></td><td>他のラベルが何も付かなかった (= 単に新しい順)</td><td>暗灰</td></tr>
+    </tbody>
+  </table>
+
+  <h2>list (クエリなし)</h2>
+  <p>
+    クエリが空のとき (TUI で入力する前、CLI の <code>list</code> サブコマンド) は FTS を経由せず、純粋な <code>sessions ORDER BY mtime DESC</code> を流します。<code>cwd</code> が分かるならそれを ORDER BY のキーに混ぜて「カレント &rarr; その他、各々新しい順」にします。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>2 本のレール (FTS5 と KNN) を別々に走らせて、<code>session_id</code> で重複を除いて合流</li>
+      <li>keyword スコア = <code>-bm25 + 2&times;cwd + recency</code></li>
+      <li>ベクトル側は <code>limit&times;2</code> で過剰取得して合流の余地を残す</li>
+      <li>4 種類のラベル (<code>cwd</code> / <code>keyword</code> / <code>semantic</code> / <code>recent</code>) で由来を可視化</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch6: TUI イベントループ                                       -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch6">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 6. TUI イベントループ</nav>
+  <h1>6. TUI のイベントループ</h1>
+  <p class="subtitle">スレッドと mpsc チャネル</p>
+
+  <h2>3 つのスレッド + 動的ワーカー</h2>
+  <div class="diagram">
+    <div class="er-diagram">
+      <div class="er-entity highlight">
+        <div class="er-entity-header">メインスレッド (UI)</div>
+        <div class="er-entity-body">
+          rx.recv_timeout(80ms)<br>
+          terminal.draw (16ms cap)<br>
+          検索 SELECT を実行
+        </div>
+        <div class="er-entity-note">AppState を所有</div>
+      </div>
+      <div class="er-entity">
+        <div class="er-entity-header">インデクサ Worker</div>
+        <div class="er-entity-body">
+          scan_and_update<br>
+          refresh_embeddings<br>
+          ProgressChan で UI に通知
+        </div>
+        <div class="er-entity-note">UI 起動時に 1 回だけ起動</div>
+      </div>
+      <div class="er-entity">
+        <div class="er-entity-header">入力ポンプ</div>
+        <div class="er-entity-body">
+          event::poll(200ms)<br>
+          event::read<br>
+          UiEvent::Term で送信
+        </div>
+      </div>
+      <div class="er-entity">
+        <div class="er-entity-header">Vector Worker (動的)</div>
+        <div class="er-entity-body">
+          キー入力デバウンス後に都度起動<br>
+          UiEvent::VectorResults で結果送信<br>
+          token で古い結果を破棄
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>UiEvent の 3 種類</h2>
+  <p>
+    すべてのスレッドから 1 本の <code>mpsc::Sender&lt;UiEvent&gt;</code> にイベントが流れ込みます。
+  </p>
+  <pre><code>enum UiEvent {
+    Term(Event),                                    // crossterm
+    Progress(IndexProgress),                        // インデクサ
+    VectorResults { query: String, hits: Vec&lt;Hit&gt; }, // ベクトル検索
+}</code></pre>
+
+  <h2>メインループの仕組み</h2>
+  <ol class="flow-steps">
+    <li><strong>描画</strong> &mdash; 16ms 経過していれば <code>terminal.draw</code> を呼ぶ (FPS のソフトキャップ)</li>
+    <li><strong>イベント待ち</strong> &mdash; <code>rx.recv_timeout(80ms)</code>。タイムアウトしたらスピナーを 1 進める</li>
+    <li><strong>分岐処理</strong> &mdash; <code>UiEvent</code> の種類に応じて状態更新 + 検索リフレッシュ</li>
+    <li><strong>デバウンス</strong> &mdash; <code>pending_query</code> があり、最後のキー入力から 30ms 経っていれば検索を実行 + Vector Worker をスポーン</li>
+  </ol>
+
+  <h2>Vector Worker のキャンセル方式</h2>
+  <p>
+    キー入力のたびに新しいベクトル検索ワーカーを起動すると、古いクエリの結果が遅れて返ってきて画面を上書きしてしまいます。これを <code>AtomicU64</code> のトークンで防ぎます:
+  </p>
+  <pre><code>let token = vector_token.fetch_add(1, SeqCst) + 1;
+thread::spawn(move || {
+    if token != token_ref.load(SeqCst) { return; }  // 既に新しいクエリが来ている
+    let hits = vector_search_in_worker(&amp;q, cwd);
+    if token == token_ref.load(SeqCst) {            // 結果が返ってもまだ最新か再確認
+        tx.send(UiEvent::VectorResults { query: q, hits });
+    }
+});</code></pre>
+  <p>
+    さらに UI 側の受信時にも <code>cached_q == state.editor.query()</code> をチェックし、3 段階の関門で stale な結果を捨てます。
+  </p>
+
+  <h2>進捗フェーズと UI 表示</h2>
+  <div class="diagram">
+    <div class="hflow">
+      <div class="hflow-box">Idle</div>
+      <div class="hflow-arrow">&rarr;</div>
+      <div class="hflow-box accent">Scanning<br>{done, total}</div>
+      <div class="hflow-arrow">&rarr;</div>
+      <div class="hflow-box accent">Embedding<br>{done, total}</div>
+      <div class="hflow-arrow">&rarr;</div>
+      <div class="hflow-box">Done &rarr; Idle</div>
+    </div>
+  </div>
+  <p>
+    Scanning/Embedding 中は毎ティックで <code>refresh_results</code> を呼び、行が増えていくのを描画します。Done は受信時に即 Idle に遷移して扱いを統一しています。
+  </p>
+
+  <h2>状態の保存 / 復元</h2>
+  <p>
+    検索結果が更新されたとき、ユーザーが選択していた行を維持するために <code>session_id</code> を覚えておき、新リストの中で同じ ID を探し直します。見つからなければインデックスをクランプします。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>1 本の <code>mpsc</code> チャネルに 3 種類の <code>UiEvent</code> を集約</li>
+      <li>キー入力は 30ms デバウンス、描画は 16ms キャップ</li>
+      <li>ベクトル検索ワーカーは <code>AtomicU64</code> トークンで stale 結果を 3 段階破棄</li>
+      <li>選択行は <code>session_id</code> ベースで保持し、結果差し替えに耐える</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch7: テンプレートレンダリング                                  -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch7">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 7. テンプレートレンダリング</nav>
+  <h1>7. テンプレートレンダリング</h1>
+  <p class="subtitle">行を Span 配列に組み立てる</p>
+
+  <h2>なぜ DSL か</h2>
+  <p>
+    1 行あたりの情報量が多い (ラベル / 経過時間 / トークン数 / プロジェクト / タイトル / プロンプト / ブランチ / PR / worktree) ため、ハードコードのフォーマット文字列だと将来の <code>--template</code> フラグに拡張できません。<code>template.rs</code> は内部表現としてレンダリング DSL を持ち、デフォルトレイアウトはこの DSL のインスタンスです。
+  </p>
+
+  <h2>Part &mdash; 行を構成する素片</h2>
+  <table>
+    <thead><tr><th>バリアント</th><th>役割</th></tr></thead>
+    <tbody>
+      <tr><td><code>Literal(&amp;str, Style)</code></td><td>固定文字 (区切りの空白など)</td></tr>
+      <tr><td><code>Field { field, style, max_width }</code></td><td>1 つのフィールドを描画。最大幅で <code>&hellip;</code> 切り詰め</td></tr>
+      <tr><td><code>Labels</code></td><td>複数の色付きバッジを連続出力</td></tr>
+      <tr><td><code>When { field, inner }</code></td><td>field が非空なときだけ inner を描画 (区切りごと隠す)</td></tr>
+      <tr><td><code>Flex { field, style }</code></td><td>残り幅を吸収する伸縮枠 (プロンプト本文に使う)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Field の種類</h2>
+  <p>
+    <code>Field</code> は <code>Hit</code> から派生する描画用の "プロパティ":
+    <code>Age</code> / <code>Project</code> / <code>Title</code> / <code>PromptOneLine</code> / <code>Pr</code> / <code>Branch</code> / <code>WorktreeTag</code> / <code>SessionId</code> / <code>Tokens</code>
+  </p>
+  <p>
+    <code>render_field</code> がそれぞれの整形を担当します &mdash; <code>Tokens</code> は <code>1.2k</code> 表記、<code>Project</code> は <code>cwd</code> 末尾 2 セグメント、<code>PromptOneLine</code> は連続空白の畳み込み、など。
+  </p>
+
+  <h2>2-pass レンダリング</h2>
+  <div class="diagram">
+    <div class="vflow">
+      <div class="hflow-box accent">Pass 1: 非 Flex を確定<br>consumed を計測</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label">remaining = total_width - consumed</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box accent">Pass 2: Flex に remaining/flex_count を割り当て</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow-box">Vec&lt;Span&lt;'static&gt;&gt;</div>
+    </div>
+  </div>
+  <p>
+    最初のパスは <code>SpanOrFlex</code> の中間表現で並べます (Flex は文字列とスタイルだけ持ったプレースホルダ)。
+    2 つ目のパスで残り幅を平等に分配し、各 Flex を <code>truncate_to_width</code> で切り詰めて完成です。
+  </p>
+
+  <h2>truncate_to_width: grapheme と表示幅</h2>
+  <p>
+    端末は <em>表示列</em> でレイアウトしますが、文字列の <em>バイト</em> や <em>char</em> とは一致しません。日本語の全角文字は 2 列、絵文字や ZWJ は複数 char で 1 グラフェム。これを正しく扱うために:
+  </p>
+  <ul>
+    <li><code>unicode_segmentation</code> で grapheme クラスタ単位に分解</li>
+    <li><code>unicode_width</code> で各グラフェムの表示列を求める</li>
+    <li>合計が <code>max_cols - 1</code> を超えない範囲で詰め、<code>&hellip;</code> を末尾に追加</li>
+  </ul>
+
+  <h2>When の効用</h2>
+  <p>
+    Branch や PR が無いセッションでは「<code>2 空白 + Branch</code>」というブロックを丸ごと出したくありません。<code>When</code> はその条件分岐を宣言的に書くための機構です。
+  </p>
+  <pre><code>Part::When {
+    field: Field::Branch,
+    inner: vec![
+        Part::Literal("  ", Style::default()),
+        Part::Field { field: Field::Branch, style: dim, max_width: Some(20) },
+    ],
+}</code></pre>
+
+  <h2>ラベルの色マップ</h2>
+  <p>
+    <code>Part::Labels</code> は <code>label_style</code> 経由で 4 種類のラベルを色付きバッジに変換します &mdash; <code>[cwd]</code> 緑 / <code>[keyword]</code> 黄 / <code>[semantic]</code> シアン / <code>[recent]</code> 暗灰。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>行レイアウトは <code>Part</code> の列で表現される DSL</li>
+      <li>Flex の伸縮を扱うため 2-pass でレンダリングする</li>
+      <li>表示幅の計算は grapheme + Unicode width で行う &mdash; char や byte 単位ではない</li>
+      <li>条件付きセクションは <code>When</code> で「区切りごと」隠す</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- Ch8: CLI と起動                                              -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<template id="tpl-ch8">
+<div class="page">
+  <nav class="breadcrumb"><a href="#toc">目次</a> &rsaquo; 8. CLI と起動</nav>
+  <h1>8. CLI と起動</h1>
+  <p class="subtitle">サブコマンドと exec claude --resume</p>
+
+  <h2>サブコマンド一覧</h2>
+  <table>
+    <thead><tr><th>コマンド</th><th>用途</th><th>主要オプション</th></tr></thead>
+    <tbody>
+      <tr><td><code>search &lt;query&gt;</code></td><td>キーワード / ベクトル混合検索</td><td><code>--mode keyword|vector|both</code>, <code>--cwd-only</code></td></tr>
+      <tr><td><code>list</code></td><td>新しい順に列挙</td><td><code>--since 7d</code>, <code>--cwd-only</code></td></tr>
+      <tr><td><code>show &lt;id&gt;</code></td><td>1 セッションの詳細を JSON 出力</td><td>&mdash;</td></tr>
+      <tr><td><code>index</code></td><td>インデックスを明示的に更新</td><td><code>--reindex</code>, <code>--no-embed</code>, <code>--progress-json</code></td></tr>
+      <tr><td><code>resume &lt;id&gt;</code></td><td>セッションの cwd に chdir &rarr; <code>exec claude --resume</code></td><td>&mdash;</td></tr>
+      <tr><td>(なし)</td><td>TTY なら TUI、そうでなければ <code>list --format json</code></td><td><code>[query]</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>サブコマンドのディスパッチ</h2>
+  <div class="diagram">
+    <div class="vflow">
+      <div class="hflow-box accent">main.rs &mdash; Cli::parse()</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="vflow-arrow-label"><code>--reset</code> ならまず DB ファイルを削除</div>
+      <div class="vflow-arrow">&darr;</div>
+      <div class="hflow" style="gap:1rem">
+        <div class="hflow-box">Cmd::Search<br>&rarr; cli::run_search</div>
+        <div class="hflow-box">Cmd::List<br>&rarr; cli::run_list</div>
+        <div class="hflow-box">Cmd::Show<br>&rarr; cli::run_show</div>
+      </div>
+      <div class="hflow" style="gap:1rem;margin-top:0.5rem">
+        <div class="hflow-box">Cmd::Index<br>&rarr; cli::run_index</div>
+        <div class="hflow-box">Cmd::Resume<br>&rarr; cli::run_resume</div>
+        <div class="hflow-box accent">None + TTY<br>&rarr; tui::run</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>出力フォーマット</h2>
+  <p>
+    <code>search</code> と <code>list</code> は <code>--format json|tsv|ids</code> を持ちます:
+  </p>
+  <ul>
+    <li><code>json</code>: <code>OutputDoc { query, cwd, results, stats }</code> をプリティプリント (整形済み JSON)</li>
+    <li><code>tsv</code>: タブ区切り (id / mtime / labels / title)</li>
+    <li><code>ids</code>: <code>session_id</code> だけ 1 行 1 件 &mdash; シェルパイプ用</li>
+  </ul>
+
+  <h2><code>resume</code> の実装</h2>
+  <p>
+    <code>launch.rs</code> は <code>exec()</code> (Unix プロセス置換) を使って自プロセスを <code>claude</code> に置き換えます。これにより:
+  </p>
+  <ul>
+    <li>子プロセスを fork して待つコストがない</li>
+    <li>シグナル / TTY が直接 <code>claude</code> に届く</li>
+    <li>正常時は二度と戻ってこない &mdash; 失敗したときだけ <code>Err</code> を返す</li>
+  </ul>
+  <pre><code>std::env::set_current_dir(&amp;cwd)?;
+let err = Command::new("claude")
+    .arg("--resume").arg(&amp;hit.session_id)
+    .exec();
+Err(anyhow!("exec claude failed: {}", err))</code></pre>
+
+  <h2>maybe_update &mdash; 検索前の暗黙インデックス更新</h2>
+  <p>
+    <code>search</code>/<code>list</code> は実行のたびに <code>maybe_update</code> を呼び、ステイル分だけ静かに UPSERT します (<code>per_file_delay = 0</code>)。<code>--no-update</code> でスキップ可能。
+    これにより「ユーザーが先に <code>index</code> サブコマンドを叩く」のを忘れていても結果が古くなりません。
+  </p>
+
+  <h2>broken-pipe 抑制</h2>
+  <p>
+    <code>cc-session-finder list --format ids | head -5</code> のような使い方で発生する <code>BrokenPipe</code> エラーは正常終了として扱います (<code>is_broken_pipe</code>)。<code>io::Error::source()</code> 経由で見えない serde_json 由来のものはメッセージ文字列で fallback 判定するという保険付きです。
+  </p>
+
+  <h2>非 TTY フォールバック</h2>
+  <p>
+    サブコマンドなし &amp; パイプ先の場合は TUI ではなく <code>list --format json</code> 相当を出します。<code>jq</code> などとの組み合わせを意識した小さな配慮です。
+  </p>
+
+  <h2>この章で覚えたこと</h2>
+  <div class="callout">
+    <ul>
+      <li>サブコマンドなし + TTY = TUI、それ以外は JSON list にフォールバック</li>
+      <li><code>resume</code> は <code>exec()</code> で自プロセスを <code>claude</code> に置き換える</li>
+      <li>検索の前に <code>maybe_update</code> が暗黙的にステイル分だけ更新する</li>
+      <li><code>BrokenPipe</code> はパイプ運用の常識なので例外扱いせず 0 終了</li>
+    </ul>
+  </div>
+</div>
+</template>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<!-- ルーター                                                    -->
+<!-- ════════════════════════════════════════════════════════════ -->
+
+<script>
+(function () {
+  var pageIds = ['toc', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'ch6', 'ch7', 'ch8'];
+  var titles = [
+    '目次',
+    '1. 全体像とモジュール構成',
+    '2. データフロー',
+    '3. SQLite スキーマ',
+    '4. インジェスト戦略',
+    '5. 検索戦略',
+    '6. TUI イベントループ',
+    '7. テンプレートレンダリング',
+    '8. CLI と起動'
+  ];
+
+  var app = document.getElementById('app');
+  var progress = document.getElementById('progress');
+
+  function getPageId() {
+    var h = location.hash.replace('#', '') || 'toc';
+    return pageIds.indexOf(h) >= 0 ? h : 'toc';
+  }
+
+  function buildNav(currentId) {
+    var idx = pageIds.indexOf(currentId);
+    var nav = document.createElement('nav');
+    nav.className = 'page-nav';
+    var prevLink = idx > 0 ? '<a href="#' + pageIds[idx - 1] + '">← ' + titles[idx - 1] + '</a>' : '';
+    var nextLink = idx < pageIds.length - 1 ? '<a href="#' + pageIds[idx + 1] + '">' + titles[idx + 1] + ' →</a>' : '';
+    nav.innerHTML = '<span>' + prevLink + '</span><span>' + nextLink + '</span>';
+    return nav;
+  }
+
+  function render() {
+    var id = getPageId();
+    var idx = pageIds.indexOf(id);
+    var pct = idx <= 0 ? 0 : Math.round((idx / (pageIds.length - 1)) * 100);
+    progress.style.width = pct + '%';
+
+    var tpl = document.getElementById('tpl-' + id);
+    if (!tpl) return;
+
+    app.innerHTML = '';
+    var clone = tpl.content.cloneNode(true);
+    var page = clone.querySelector('.page');
+    if (page) page.appendChild(buildNav(id));
+    app.appendChild(clone);
+    window.scrollTo(0, 0);
+  }
+
+  window.addEventListener('hashchange', render);
+  render();
+})();
+</script>
+
+</body>
+</html>
