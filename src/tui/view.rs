@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use super::app::AppState;
+use crate::index::search::Hit;
 use crate::template;
 
 pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
@@ -53,41 +54,73 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let visible_rows = inner.height as usize;
-    if visible_rows == 0 {
+    let viewport_height = inner.height as usize;
+    if viewport_height == 0 {
         return;
     }
 
-    // Compute scroll offset so the selection is in view.
-    let offset = if state.selected >= visible_rows {
-        state.selected + 1 - visible_rows
-    } else {
-        0
-    };
-
     let template_parts = template::default_row_template();
-
-    for (i, hit) in state
+    let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
-        .enumerate()
-        .skip(offset)
-        .take(visible_rows)
-    {
-        let y = inner.y + (i - offset) as u16;
+        .map(|hit| render_result_lines(hit, &template_parts, inner.width))
+        .collect();
+    let item_heights: Vec<usize> = items.iter().map(|lines| item_height(lines)).collect();
+    let offset = result_scroll_offset(&item_heights, state.selected, viewport_height);
+
+    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+    let mut y = inner.y;
+
+    for (i, lines) in items.iter().enumerate().skip(offset) {
+        if y >= inner.bottom() {
+            break;
+        }
         let is_sel = i == state.selected;
 
-        let spans = template::render(&template_parts, hit, inner.width);
-        let style = if is_sel {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        let line = Line::from(spans).style(style);
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
-        let p = Paragraph::new(line);
-        f.render_widget(p, row_area);
+        for line in lines {
+            if y >= inner.bottom() {
+                break;
+            }
+
+            let line = if is_sel {
+                line.clone().style(selected_style)
+            } else {
+                line.clone()
+            };
+            let row_area = Rect::new(inner.x, y, inner.width, 1);
+            f.render_widget(Paragraph::new(line), row_area);
+            y = y.saturating_add(1);
+        }
     }
+}
+
+fn render_result_lines(
+    hit: &Hit,
+    template_parts: &[template::Part],
+    width: u16,
+) -> Vec<Line<'static>> {
+    vec![Line::from(template::render(template_parts, hit, width))]
+}
+
+fn item_height(lines: &[Line<'static>]) -> usize {
+    lines.len().max(1)
+}
+
+fn result_scroll_offset(item_heights: &[usize], selected: usize, viewport_height: usize) -> usize {
+    if item_heights.is_empty() {
+        return 0;
+    }
+
+    let selected = selected.min(item_heights.len() - 1);
+    let mut offset = selected;
+    let mut used = item_heights[selected];
+
+    while offset > 0 && used.saturating_add(item_heights[offset - 1]) <= viewport_height {
+        offset -= 1;
+        used = used.saturating_add(item_heights[offset]);
+    }
+
+    offset
 }
 
 fn draw_status_bar(f: &mut Frame, area: Rect, _state: &AppState, _tick: usize) {
