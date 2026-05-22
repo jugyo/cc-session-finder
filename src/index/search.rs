@@ -108,7 +108,7 @@ pub fn keyword(
     limit: usize,
 ) -> Result<Vec<Hit>> {
     let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
-    let q = sanitize_fts_query(query);
+    let q = build_fts_query(query);
     if q.is_empty() {
         return Ok(vec![]);
     }
@@ -168,10 +168,38 @@ pub fn keyword(
     Ok(annotate(scored, cwd_s.as_deref()))
 }
 
-fn sanitize_fts_query(q: &str) -> String {
-    // Wrap in double quotes to treat as a phrase; escape internal quotes.
-    let escaped = q.replace('"', "\"\"");
-    format!("\"{}\"", escaped.trim())
+/// trigram tokenizer ignores tokens shorter than 3 characters, so we drop them
+/// from the AND/NEAR clauses to avoid producing an unmatchable query.
+const TRIGRAM_MIN_LEN: usize = 3;
+/// Distance window for the NEAR clause (FTS5's own default).
+const NEAR_DISTANCE: u32 = 10;
+
+/// Translate a user query into an FTS5 MATCH expression of the form
+/// `(t1 AND t2 ...) OR NEAR(t1 t2 ..., 10)`. All tokens must appear (any
+/// order); the NEAR clause adds a bm25 boost when they also occur near each
+/// other. Tokens shorter than 3 chars are dropped; if nothing survives, the
+/// whole input is matched as a phrase as a last resort.
+fn build_fts_query(q: &str) -> String {
+    let trimmed = q.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let tokens: Vec<String> = trimmed
+        .split_whitespace()
+        .filter(|t| t.chars().count() >= TRIGRAM_MIN_LEN)
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+
+    match tokens.len() {
+        0 => format!("\"{}\"", trimmed.replace('"', "\"\"")),
+        1 => tokens.into_iter().next().unwrap(),
+        _ => {
+            let and_clause = tokens.join(" AND ");
+            let near_clause = format!("NEAR({}, {})", tokens.join(" "), NEAR_DISTANCE);
+            format!("({}) OR {}", and_clause, near_clause)
+        }
+    }
 }
 
 /// Columns expected (in this exact order) by `map_hit`.
@@ -288,4 +316,99 @@ pub fn show(conn: &Connection, session_id: &str) -> Result<Option<Hit>> {
         return Ok(Some(map_hit(r)?));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(build_fts_query(""), "");
+        assert_eq!(build_fts_query("   "), "");
+    }
+
+    #[test]
+    fn single_token_is_just_that_token() {
+        assert_eq!(build_fts_query("foo"), "\"foo\"");
+    }
+
+    #[test]
+    fn multi_tokens_combine_and_with_near() {
+        assert_eq!(
+            build_fts_query("foo bar buz"),
+            "(\"foo\" AND \"bar\" AND \"buz\") OR NEAR(\"foo\" \"bar\" \"buz\", 10)"
+        );
+    }
+
+    #[test]
+    fn drops_tokens_shorter_than_trigram_min() {
+        // "ab" is filtered; only "foo" and "bar" remain.
+        assert_eq!(
+            build_fts_query("ab foo bar"),
+            "(\"foo\" AND \"bar\") OR NEAR(\"foo\" \"bar\", 10)"
+        );
+    }
+
+    #[test]
+    fn short_remainder_collapses_to_single_token() {
+        // After filtering shorts, exactly one token left → no AND/NEAR.
+        assert_eq!(build_fts_query("a b foo"), "\"foo\"");
+    }
+
+    #[test]
+    fn all_short_falls_back_to_phrase() {
+        // Nothing survives the trigram filter → phrase fallback on trimmed input.
+        assert_eq!(build_fts_query("ab cd"), "\"ab cd\"");
+    }
+
+    #[test]
+    fn escapes_quotes_inside_tokens() {
+        assert_eq!(
+            build_fts_query("foo a\"bc"),
+            "(\"foo\" AND \"a\"\"bc\") OR NEAR(\"foo\" \"a\"\"bc\", 10)"
+        );
+    }
+
+    // ---- integration tests against an in-memory DB ----
+
+    fn open_indexed_db() -> Connection {
+        crate::index::register_sqlite_vec();
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        crate::index::schema::ensure(&conn).expect("schema");
+        conn
+    }
+
+    fn insert_session(conn: &Connection, id: &str, cwd: &str, preview: &str) {
+        conn.execute(
+            "INSERT INTO sessions
+               (session_id, project_dir, cwd, preview, mtime, size, file_path)
+             VALUES (?1, '/p', ?2, ?3, 0, 0, '/f')",
+            params![id, cwd, preview],
+        )
+        .expect("insert");
+    }
+
+    #[test]
+    fn keyword_matches_against_cwd() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/Users/foo/cc-session-finder", "hello world");
+
+        let hits = keyword(&conn, "session-finder", None, false, 10).unwrap();
+        assert!(hits.iter().any(|h| h.session_id == "s1"), "{hits:?}");
+    }
+
+    #[test]
+    fn keyword_and_spans_preview_and_cwd_columns() {
+        // "hello" is in preview, "session-finder" is in cwd. AND across columns
+        // should still match the row.
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/Users/foo/cc-session-finder", "hello world");
+        insert_session(&conn, "s2", "/Users/bar/other-project", "hello again");
+
+        let hits = keyword(&conn, "hello session-finder", None, false, 10).unwrap();
+        let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
+        assert!(ids.contains(&"s1"), "{ids:?}");
+        assert!(!ids.contains(&"s2"), "{ids:?}");
+    }
 }

@@ -13,7 +13,7 @@ use rusqlite::Connection;
 
 static REGISTER_VEC: Once = Once::new();
 
-fn register_sqlite_vec() {
+pub(crate) fn register_sqlite_vec() {
     REGISTER_VEC.call_once(|| unsafe {
         type SqliteAutoExtFn = unsafe extern "C" fn(
             *mut rusqlite::ffi::sqlite3,

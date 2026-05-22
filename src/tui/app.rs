@@ -156,7 +156,9 @@ fn run_loop(
                 // user has typed (otherwise it's stale).
                 if query == state.editor.query() {
                     state.vector_cache = Some((query, hits));
-                    rebuild_results(&mut state);
+                    // Same query, just merging in late-arriving vector hits —
+                    // keep the user's current selection.
+                    rebuild_results(&mut state, true);
                 }
                 state.vector_search_started = None;
             }
@@ -359,33 +361,40 @@ fn refresh_results(conn: &Arc<Mutex<rusqlite::Connection>>, state: &mut AppState
     } else {
         index::search::keyword(&conn, &q, cwd.as_deref(), false, 100)?
     };
-    rebuild_results(state);
+    // Query changed → results are re-ranked, snap the cursor back to the top.
+    rebuild_results(state, false);
     Ok(())
 }
 
 /// Recompute `state.results` from `keyword_results` + `vector_cache`. The
 /// cache is only honored if it was built for the current query.
-fn rebuild_results(state: &mut AppState) {
+///
+/// `preserve_selection`: when true, try to keep the cursor on the same
+/// session by id (used when async vector hits merge into an existing query);
+/// when false, reset to the top (used when the query itself just changed).
+fn rebuild_results(state: &mut AppState, preserve_selection: bool) {
     let q = state.editor.query();
     let vec_hits: Vec<Hit> = match &state.vector_cache {
         Some((cached_q, hits)) if cached_q == q => hits.clone(),
         _ => Vec::new(),
     };
-    let prev_selected_id = state
-        .results
-        .get(state.selected)
-        .map(|h| h.session_id.clone());
+
+    let prev_selected_id = if preserve_selection {
+        state
+            .results
+            .get(state.selected)
+            .map(|h| h.session_id.clone())
+    } else {
+        None
+    };
 
     state.results = crate::index::search::merge(state.keyword_results.clone(), vec_hits);
 
-    // Try to preserve the user's selection by id; otherwise clamp.
     if let Some(id) = prev_selected_id {
         if let Some(idx) = state.results.iter().position(|h| h.session_id == id) {
             state.selected = idx;
             return;
         }
     }
-    if state.selected >= state.results.len() {
-        state.selected = state.results.len().saturating_sub(1);
-    }
+    state.selected = 0;
 }
