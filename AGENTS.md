@@ -1,0 +1,164 @@
+# AGENTS.md
+
+Guide for AI coding agents working in this repository.
+(`CLAUDE.md` is a symlink to this file.)
+
+For the user-facing overview, installation, and usage, see
+[`README.md`](README.md). For the design rationale and decision history, see
+[`docs/plan.md`](docs/plan.md).
+
+## What this project is
+
+A Rust TUI / CLI that indexes the JSONL sessions Claude Code writes under
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` into SQLite, then runs
+FTS5 (keyword) and sqlite-vec (semantic) search in parallel. Pressing Enter
+execs `claude --resume <session-id>`.
+
+## Key constraints
+
+- **The JSONL files are read-only.** Writing under `~/.claude/projects/`
+  corrupts Claude Code's own sessions. Only write under our cache
+  (`~/.cache/cc-session-finder/`).
+- **TUI and CLI share the same DB.** SQLite is opened in WAL mode for
+  concurrent reader / writer access.
+- **`--reset` is destructive.** Don't use it without explicit user
+  permission; `--reindex` is enough in almost every case.
+- **Semantic search depends on the `embed` feature**, which is on by
+  default but can be turned off with `cargo build --no-default-features`.
+  Keep both feature variants compiling — `#[cfg(feature = "embed")]`
+  branches must stay in sync (CI builds both).
+
+## Module layout
+
+```
+src/
+├── main.rs           # CLI entry (clap), subcommand dispatch
+├── cli.rs            # Non-interactive subcommands (search/list/show/index/resume)
+├── tui/              # ratatui-based TUI
+│   ├── mod.rs        # tokio::select event loop
+│   ├── app.rs        # State management and key bindings
+│   ├── view.rs       # Rendering
+│   ├── input.rs      # IME / multi-byte safe query editor
+│   └── indexing.rs   # UI state during index updates
+├── index/
+│   ├── mod.rs        # Public API (open, db_path)
+│   ├── schema.rs     # Migrations
+│   ├── ingest.rs     # Incremental scan + UPSERT
+│   ├── embed.rs      # fastembed wrapper (feature = "embed")
+│   └── search.rs     # FTS5 / vec0 queries and merge
+├── session.rs        # JSONL parser → SessionRecord
+├── paths.rs          # cwd <-> project_dir encoding, cache root
+├── relative_time.rs  # "3h ago" style relative timestamps
+├── template.rs       # Row rendering template
+└── launch.rs         # execvp("claude", ["claude", "--resume", ...])
+```
+
+## Development workflow
+
+```sh
+cargo build  --all-features
+cargo test   --all-features
+cargo fmt    --all
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+- Always include `--all-features` for `cargo build` locally. Default-feature-
+  only builds can mask embed-related compile errors that CI will catch later.
+- To exercise the TUI by hand, just `cargo run` (no args ⇒ TUI). For CLI
+  smoke tests, `cargo run -- list --limit 5 | jq` works well.
+- For verbose logs, set `CC_SESSION_FINDER_LOG=debug`.
+- If you suspect index corruption, try `cargo run -- --reindex` before
+  reaching for `--reset`.
+
+## Code style
+
+- `cargo fmt` (default rustfmt config) and `cargo clippy -D warnings` are
+  CI blockers. Run both before opening a PR.
+- Use `anyhow::Result` at function boundaries; `thiserror` for internal
+  error types.
+- Short doc comments (`///`) on public APIs only. Don't narrate internals.
+- No purely descriptive comments (this is enforced repo-wide via
+  CLAUDE.md / AGENTS.md).
+
+## CI
+
+`.github/workflows/ci.yml` runs fmt / clippy / test on every PR and on
+push to `main`. The test matrix covers `ubuntu-latest` and `macos-latest`.
+`RUSTFLAGS: "-D warnings"` means warnings fail the build.
+
+## Pinning GitHub Actions versions (important)
+
+Every `uses:` reference in `.github/workflows/*.yml` **must be pinned to a
+concrete version**. Don't use major tags like `@v4` or branch refs like
+`@stable`.
+
+- For actions with release tags: pin to a specific patch version
+  (e.g. `actions/checkout@v6.0.2`, `Swatinem/rust-cache@v2.9.1`).
+- For actions that only publish branch refs (e.g. `dtolnay/rust-toolchain`):
+  pin to a commit SHA and leave a comment recording the source branch /
+  date.
+
+This matters for both supply-chain safety and build reproducibility. Apply
+this rule to both new workflow files and edits to existing ones.
+
+## Release process
+
+Pushing a tag matching `vX.Y.Z` triggers `.github/workflows/release.yml`,
+which builds an `aarch64-apple-darwin` binary and attaches it to a GitHub
+Release.
+
+1. Bump `version` in `Cargo.toml`.
+2. Run `cargo build --release` once so the bump propagates to `Cargo.lock`
+   (the `cc-session-finder` entry there must move in lockstep).
+3. Commit both files together and push to `main`.
+   ```sh
+   git add Cargo.toml Cargo.lock
+   git commit -m "Release vX.Y.Z"
+   git push
+   ```
+4. Tag and push the tag.
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+5. After the `Release` workflow finishes, verify the GitHub Releases page:
+   - `cc-session-finder-vX.Y.Z-aarch64-apple-darwin.tar.gz` is attached
+   - Release notes are auto-generated (`generate_release_notes: true`)
+6. Edit the release notes to add highlights or migration notes as needed.
+
+Tag naming convention: `v` prefix + SemVer (`v0.2.0`, `v1.0.0-rc.1`, ...).
+Suffixed tags like `v0.2.0-rc.1` are marked as pre-releases on GitHub.
+
+To unpublish a release, remove both the tag and the GitHub Release.
+
+```sh
+git push --delete origin vX.Y.Z
+git tag -d vX.Y.Z
+gh release delete vX.Y.Z
+```
+
+Agent-specific reminders:
+
+- **Do not push tags without explicit user permission** — a tag push runs
+  the release workflow and produces a public artifact.
+- The release workflow only builds for macOS aarch64. Linux and x86_64
+  macOS users build from source for now.
+
+## Things to avoid (footguns)
+
+- Writing to or deleting anything under `~/.claude/`
+- Running `--reset` without confirming with the user
+- Running `cargo install` without confirming (it writes into the user's
+  `~/.cargo/bin/`)
+- Leaving floating tags (`@v4`, `@stable`) in GitHub Actions workflows
+- Pushing `git push origin vX.Y.Z` on your own
+- Writing code that assumes the `embed` feature is on without a `#[cfg]`
+  branch (the `--no-default-features` job in CI will catch this)
+
+## References
+
+- [README.md](README.md) — user-facing docs
+- [docs/plan.md](docs/plan.md) — architecture and design rationale
+- [sqlite-vec](https://github.com/asg017/sqlite-vec)
+- [fastembed-rs](https://github.com/Anush008/fastembed-rs)
+- [ratatui](https://ratatui.rs/)
