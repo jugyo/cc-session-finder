@@ -117,7 +117,7 @@ pub fn keyword(
         "SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt, s.file_path,
                 s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
                 s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
-                bm25(sessions_fts) AS rank
+                bm25(sessions_fts, 1.5, 3.0, 0.8) AS rank
          FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
          WHERE sessions_fts MATCH ?"
             .to_string();
@@ -316,36 +316,89 @@ mod tests {
         conn
     }
 
-    fn insert_session(conn: &Connection, id: &str, cwd: &str, preview: &str) {
+    fn insert_session(
+        conn: &Connection,
+        id: &str,
+        cwd: &str,
+        ai_title: Option<&str>,
+        first_prompt: Option<&str>,
+    ) {
+        let preview = [ai_title, first_prompt]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" | ");
         conn.execute(
             "INSERT INTO sessions
-               (session_id, project_dir, cwd, preview, mtime, size, file_path)
-             VALUES (?1, '/p', ?2, ?3, 0, 0, '/f')",
-            params![id, cwd, preview],
+               (session_id, project_dir, cwd, ai_title, first_prompt, preview, mtime, size, file_path)
+             VALUES (?1, '/p', ?2, ?3, ?4, ?5, 0, 0, '/f')",
+            params![id, cwd, ai_title, first_prompt, preview],
         )
         .expect("insert");
     }
 
     #[test]
+    fn schema_fts_columns_are_split_metadata() {
+        let conn = open_indexed_db();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(sessions_fts)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(cols, ["ai_title", "first_prompt", "cwd"]);
+    }
+
+    #[test]
     fn keyword_matches_against_cwd() {
         let conn = open_indexed_db();
-        insert_session(&conn, "s1", "/Users/foo/cc-session-finder", "hello world");
+        insert_session(
+            &conn,
+            "s1",
+            "/Users/foo/cc-session-finder",
+            None,
+            Some("hello world"),
+        );
 
         let hits = keyword(&conn, "session-finder", None, false, 10).unwrap();
         assert!(hits.iter().any(|h| h.session_id == "s1"), "{hits:?}");
     }
 
     #[test]
-    fn keyword_and_spans_preview_and_cwd_columns() {
-        // "hello" is in preview, "session-finder" is in cwd. AND across columns
-        // should still match the row.
+    fn keyword_and_spans_metadata_and_cwd_columns() {
         let conn = open_indexed_db();
-        insert_session(&conn, "s1", "/Users/foo/cc-session-finder", "hello world");
-        insert_session(&conn, "s2", "/Users/bar/other-project", "hello again");
+        insert_session(
+            &conn,
+            "s1",
+            "/Users/foo/cc-session-finder",
+            None,
+            Some("hello world"),
+        );
+        insert_session(
+            &conn,
+            "s2",
+            "/Users/bar/other-project",
+            None,
+            Some("hello again"),
+        );
 
         let hits = keyword(&conn, "hello session-finder", None, false, 10).unwrap();
         let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
         assert!(ids.contains(&"s1"), "{ids:?}");
         assert!(!ids.contains(&"s2"), "{ids:?}");
+    }
+
+    #[test]
+    fn keyword_ranks_first_prompt_above_title_match() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "title", "/p", Some("phaseone ranking"), None);
+        insert_session(&conn, "prompt", "/p", None, Some("phaseone ranking"));
+
+        let hits = keyword(&conn, "phaseone", None, false, 10).unwrap();
+        let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
+
+        assert_eq!(ids.first(), Some(&"prompt"));
     }
 }

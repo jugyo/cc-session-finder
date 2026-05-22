@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -46,7 +46,8 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_sessions_cwd   ON sessions(cwd);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
-            preview,
+            ai_title,
+            first_prompt,
             cwd,
             content='sessions',
             content_rowid='rowid',
@@ -54,14 +55,18 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         );
 
         CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
-            INSERT INTO sessions_fts(rowid, preview, cwd) VALUES (new.rowid, new.preview, new.cwd);
+            INSERT INTO sessions_fts(rowid, ai_title, first_prompt, cwd)
+            VALUES (new.rowid, new.ai_title, new.first_prompt, new.cwd);
         END;
         CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
-            INSERT INTO sessions_fts(sessions_fts, rowid, preview, cwd) VALUES('delete', old.rowid, old.preview, old.cwd);
+            INSERT INTO sessions_fts(sessions_fts, rowid, ai_title, first_prompt, cwd)
+            VALUES('delete', old.rowid, old.ai_title, old.first_prompt, old.cwd);
         END;
         CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
-            INSERT INTO sessions_fts(sessions_fts, rowid, preview, cwd) VALUES('delete', old.rowid, old.preview, old.cwd);
-            INSERT INTO sessions_fts(rowid, preview, cwd) VALUES (new.rowid, new.preview, new.cwd);
+            INSERT INTO sessions_fts(sessions_fts, rowid, ai_title, first_prompt, cwd)
+            VALUES('delete', old.rowid, old.ai_title, old.first_prompt, old.cwd);
+            INSERT INTO sessions_fts(rowid, ai_title, first_prompt, cwd)
+            VALUES (new.rowid, new.ai_title, new.first_prompt, new.cwd);
         END;
         "#,
     )?;
