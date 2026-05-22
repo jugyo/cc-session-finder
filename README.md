@@ -1,18 +1,16 @@
 # cc-session-finder
 
-Fast keyword + semantic finder for [Claude Code](https://claude.com/claude-code) sessions.
+Fast keyword finder for [Claude Code](https://claude.com/claude-code) sessions.
 
 `claude --resume`'s built-in picker is a simple chronological list, which makes
 finding old sessions tedious. `cc-session-finder` indexes every JSONL session
-under `~/.claude/projects/` into SQLite and runs **FTS5 keyword search** and
-**multilingual embedding-based semantic search** in parallel from a TUI.
-Selecting a result execs `claude --resume <session-id>` in place.
+under `~/.claude/projects/` into SQLite and runs **FTS5 keyword search** from a
+TUI. Selecting a result execs `claude --resume <session-id>` in place.
 
 - Incremental search in a TUI
 - Non-interactive CLI mode for AI agents / shells (JSON / TSV / IDs)
 - Sessions from the current `cwd` are boosted to the top
 - Works with non-ASCII queries (FTS5 trigram tokenizer)
-- Runs locally after a one-time embedding model download (~120MB)
 
 ## Install
 
@@ -41,17 +39,6 @@ mv cc-session-finder /usr/local/bin/
 
 - Rust stable (`rustup` recommended)
 - macOS / Linux (Windows is untested)
-- On first launch the multilingual MiniLM embedding model (~120MB) is
-  downloaded automatically and cached under
-  `~/.cache/cc-session-finder/models/`
-
-To build without embeddings:
-
-```sh
-cargo install --path . --no-default-features
-```
-
-Semantic search is disabled, but keyword search and the `cwd` boost still work.
 
 ## Usage
 
@@ -83,8 +70,7 @@ cc-session-finder graphql
 | Label | Meaning |
 | -- | -- |
 | `[cwd]` | Session's `cwd` matches the current working directory |
-| `[kw]` | Matched by FTS5 keyword search |
-| `[~]` | Matched by vector KNN (and not already in the keyword hits) |
+| `[keyword]` | Matched by FTS5 keyword search |
 | `[recent]` | Default label when the query is empty (newest-first) |
 
 ### CLI mode (for AI agents / scripts)
@@ -93,14 +79,8 @@ CLI mode activates whenever a subcommand is given, or when stdout is not a
 TTY. The default output format is JSON.
 
 ```sh
-# Search (default: keyword + vector merged)
+# Keyword search
 cc-session-finder search "graphql migration" --limit 10
-
-# Keyword path only
-cc-session-finder search "graphql" --mode keyword
-
-# Vector path only
-cc-session-finder search "database migration" --mode vector
 
 # Newest-first listing
 cc-session-finder list --limit 50 --since 7d
@@ -137,16 +117,13 @@ cc-session-finder index --reindex --progress-json
 | -- | -- |
 | `--reindex` | Empty the DB and rebuild from scratch |
 | `--reset` | Delete the DB file outright (more destructive than `--reindex`) |
-| `--no-vector` | Disable the vector path (useful in CI without the embed model) |
-| `index --no-embed` | Refresh metadata only; skip vector generation |
 
 ## File layout
 
 | Path | Purpose |
 | -- | -- |
 | `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` | Raw sessions written by Claude Code (read-only) |
-| `~/.cache/cc-session-finder/index.db` | SQLite index (FTS5 + sqlite-vec) |
-| `~/.cache/cc-session-finder/models/` | fastembed multilingual model cache |
+| `~/.cache/cc-session-finder/index.db` | SQLite index (FTS5) |
 
 ## Logging
 
@@ -160,10 +137,10 @@ CC_SESSION_FINDER_LOG=debug cc-session-finder search graphql 2> debug.log
 ## Development
 
 ```sh
-cargo build --all-features
-cargo test  --all-features
+cargo build
+cargo test
 cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 CI (`.github/workflows/ci.yml`) runs fmt / clippy / test on both Ubuntu and

@@ -195,7 +195,6 @@ fn label_style(label: &str) -> (String, Color) {
     match label {
         "cwd" => ("[cwd]".to_string(), Color::Green),
         "keyword" => ("[keyword]".to_string(), Color::Yellow),
-        "semantic" => ("[semantic]".to_string(), Color::Cyan),
         "recent" => ("[recent]".to_string(), Color::DarkGray),
         other => (format!("[{}]", other), Color::Gray),
     }

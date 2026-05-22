@@ -31,13 +31,9 @@ struct Cli {
 
     /// Delete the on-disk index DB before starting (more destructive than
     /// --reindex; drops the SQLite file and lets the next run recreate it
-    /// from scratch). The fastembed model cache is left intact.
+    /// from scratch).
     #[arg(long, global = true)]
     reset: bool,
-
-    /// Disable vector search path
-    #[arg(long, global = true)]
-    no_vector: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -58,8 +54,6 @@ enum Cmd {
 struct SearchArgs {
     /// Query string
     query: String,
-    #[arg(long, value_enum, default_value_t = SearchMode::Both)]
-    mode: SearchMode,
     #[arg(long, default_value_t = 20)]
     limit: usize,
     #[arg(long)]
@@ -102,8 +96,6 @@ struct IndexArgs {
     #[arg(long)]
     reindex: bool,
     #[arg(long)]
-    no_embed: bool,
-    #[arg(long)]
     quiet: bool,
     /// Emit progress as JSON Lines on stderr
     #[arg(long)]
@@ -113,13 +105,6 @@ struct IndexArgs {
 #[derive(Debug, Args)]
 struct ResumeArgs {
     session_id: String,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum SearchMode {
-    Keyword,
-    Vector,
-    Both,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -141,14 +126,14 @@ fn main() -> ExitCode {
     }
 
     let result: anyhow::Result<ExitCode> = match cli.command {
-        Some(Cmd::Search(args)) => cli::run_search(args, cli.reindex, cli.no_vector),
+        Some(Cmd::Search(args)) => cli::run_search(args, cli.reindex),
         Some(Cmd::List(args)) => cli::run_list(args, cli.reindex),
         Some(Cmd::Show(args)) => cli::run_show(args),
         Some(Cmd::Index(args)) => cli::run_index(args, cli.reindex),
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         None => {
             if atty::is(atty::Stream::Stdout) {
-                tui::run(cli.query, cli.reindex, cli.no_vector)
+                tui::run(cli.query, cli.reindex)
             } else {
                 // Non-TTY without subcommand → behave like `list --format json`
                 cli::run_list(

@@ -5,12 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
 use super::app::AppState;
 use crate::template;
-
-const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
     let area = f.area();
@@ -24,12 +21,12 @@ pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
         ])
         .split(area);
 
-    draw_query_box(f, chunks[0], state, tick);
+    draw_query_box(f, chunks[0], state);
     draw_results(f, chunks[1], state);
     draw_status_bar(f, chunks[2], state, tick);
 }
 
-fn draw_query_box(f: &mut Frame, area: Rect, state: &AppState, tick: usize) {
+fn draw_query_box(f: &mut Frame, area: Rect, state: &AppState) {
     let q = state.editor.query();
 
     let spans: Vec<Span> = vec![
@@ -40,19 +37,6 @@ fn draw_query_box(f: &mut Frame, area: Rect, state: &AppState, tick: usize) {
     let block = Block::default().borders(Borders::ALL).title("search");
     let p = Paragraph::new(Line::from(spans)).block(block.clone());
     f.render_widget(p, area);
-
-    // Bare search spinner at right edge of the input row, shown only while a
-    // vector search is in flight. Index/embed progress lives in the status bar.
-    if state.vector_search_started.is_some() {
-        let spinner = SPINNER[tick % SPINNER.len()];
-        let s = spinner.to_string();
-        let w = UnicodeWidthStr::width(s.as_str()) as u16;
-        if area.width > w + 2 {
-            let r = Rect::new(area.right().saturating_sub(w + 2), area.y + 1, w, 1);
-            let suf = Paragraph::new(Span::styled(s, Style::default().fg(Color::DarkGray)));
-            f.render_widget(suf, r);
-        }
-    }
 
     // Caret position.
     let cursor_col = state.editor.cursor_col();

@@ -2,7 +2,7 @@
 name = "cc-session-finder"
 version = "0.1.0"
 edition = "2021"
-description = "Fast keyword + semantic finder for Claude Code sessions"
+description = "Fast keyword finder for Claude Code sessions"
 license = "MIT"
 
 [[bin]]
@@ -16,8 +16,6 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "trace"] }
-sqlite-vec = "0.1"
-zerocopy = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -31,13 +29,6 @@ atty = "0.2"
 # TUI
 ratatui = "0.28"
 crossterm = "0.28"
-
-# Embeddings (optional via feature)
-fastembed = { version = "4", optional = true }
-
-[features]
-default = ["embed"]
-embed = ["dep:fastembed"]
 
 [profile.release]
 lto = "thin"

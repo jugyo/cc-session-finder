@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::index;
 use crate::index::ingest::{IngestStats, Progress};
 use crate::index::search::Hit;
-use crate::{Format, IndexArgs, ListArgs, ResumeArgs, SearchArgs, SearchMode, ShowArgs};
+use crate::{Format, IndexArgs, ListArgs, ResumeArgs, SearchArgs, ShowArgs};
 
 #[derive(Serialize)]
 struct OutputDoc<'a> {
@@ -24,7 +24,6 @@ struct OutputDoc<'a> {
 struct OutputStats {
     total_sessions: i64,
     keyword_hits: usize,
-    vector_hits: usize,
     took_ms: u128,
 }
 
@@ -51,48 +50,18 @@ pub fn run_list(args: ListArgs, reindex: bool) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn run_search(args: SearchArgs, reindex: bool, no_vector: bool) -> Result<ExitCode> {
+pub fn run_search(args: SearchArgs, reindex: bool) -> Result<ExitCode> {
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
 
-    let want_kw = matches!(args.mode, SearchMode::Keyword | SearchMode::Both);
-    let want_vec = matches!(args.mode, SearchMode::Vector | SearchMode::Both) && !no_vector;
-
-    let kw_hits = if want_kw {
-        index::search::keyword(
-            &conn,
-            &args.query,
-            cwd.as_deref(),
-            args.cwd_only,
-            args.limit,
-        )?
-    } else {
-        Vec::new()
-    };
-
-    let vec_hits = if want_vec {
-        run_vector_search(
-            &conn,
-            &args.query,
-            cwd.as_deref(),
-            args.cwd_only,
-            args.limit,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!("vector search failed: {e}");
-            Vec::new()
-        })
-    } else {
-        Vec::new()
-    };
-
-    let hits = index::search::merge(kw_hits, vec_hits);
-    let hits = if hits.len() > args.limit {
-        hits[..args.limit].to_vec()
-    } else {
-        hits
-    };
+    let hits = index::search::keyword(
+        &conn,
+        &args.query,
+        cwd.as_deref(),
+        args.cwd_only,
+        args.limit,
+    )?;
 
     write_results(
         &hits,
@@ -103,28 +72,6 @@ pub fn run_search(args: SearchArgs, reindex: bool, no_vector: bool) -> Result<Ex
         &conn,
     )?;
     Ok(ExitCode::SUCCESS)
-}
-
-#[cfg(feature = "embed")]
-fn run_vector_search(
-    conn: &rusqlite::Connection,
-    query: &str,
-    cwd: Option<&std::path::Path>,
-    cwd_only: bool,
-    limit: usize,
-) -> Result<Vec<index::search::Hit>> {
-    index::search::vector(conn, query, cwd, cwd_only, limit)
-}
-
-#[cfg(not(feature = "embed"))]
-fn run_vector_search(
-    _conn: &rusqlite::Connection,
-    _query: &str,
-    _cwd: Option<&std::path::Path>,
-    _cwd_only: bool,
-    _limit: usize,
-) -> Result<Vec<index::search::Hit>> {
-    Ok(Vec::new())
 }
 
 pub fn run_show(args: ShowArgs) -> Result<ExitCode> {
@@ -161,57 +108,7 @@ pub fn run_index(args: IndexArgs, reindex_top: bool) -> Result<ExitCode> {
             stats.scanned, stats.upserted, stats.deleted, stats.total
         );
     }
-
-    if !args.no_embed {
-        if let Err(e) = run_embed_refresh(&mut conn, &args) {
-            tracing::warn!("embed refresh failed: {e}");
-            if !args.quiet {
-                eprintln!("warning: embed refresh failed: {e:#}");
-            }
-        }
-    }
     Ok(ExitCode::SUCCESS)
-}
-
-#[cfg(feature = "embed")]
-fn run_embed_refresh(conn: &mut rusqlite::Connection, args: &IndexArgs) -> Result<()> {
-    let quiet = args.quiet;
-    let json = args.progress_json;
-    let mut last_pct: u32 = 0;
-    let n = index::embed::refresh_embeddings(conn, 16, |done, total| {
-        if quiet {
-            return;
-        }
-        if json {
-            let _ = writeln!(
-                io::stderr(),
-                "{}",
-                serde_json::json!({"event":"embed","done":done,"total":total})
-            );
-            return;
-        }
-        if total == 0 {
-            return;
-        }
-        let pct = (done * 100 / total).min(100);
-        if pct >= last_pct + 10 || done == total {
-            eprintln!("embedding {}/{} ({}%)", done, total, pct);
-            last_pct = pct;
-        }
-    })?;
-    if !quiet && !json {
-        if n > 0 {
-            eprintln!("embedded {} sessions", n);
-        } else {
-            eprintln!("embeddings up to date");
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "embed"))]
-fn run_embed_refresh(_conn: &mut rusqlite::Connection, _args: &IndexArgs) -> Result<()> {
-    Ok(())
 }
 
 pub fn run_resume(args: ResumeArgs) -> Result<ExitCode> {
@@ -246,10 +143,6 @@ fn write_results(
                     keyword_hits: hits
                         .iter()
                         .filter(|h| h.labels.iter().any(|l| l == "keyword"))
-                        .count(),
-                    vector_hits: hits
-                        .iter()
-                        .filter(|h| h.labels.iter().any(|l| l == "semantic"))
                         .count(),
                     took_ms: start.elapsed().as_millis(),
                 },

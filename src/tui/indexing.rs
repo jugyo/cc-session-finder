@@ -1,6 +1,6 @@
 //! Pre-TUI indexing phase. Animates a single-line spinner on stderr while the
-//! background worker scans and embeds session files. Returns only after the
-//! worker reports completion; the main TUI starts on a fully populated DB.
+//! background worker scans session files. Returns only after the worker
+//! reports completion; the main TUI starts on a fully populated DB.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -19,7 +19,6 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 enum Phase {
     Starting,
     Scanning { done: u32, total: u32 },
-    Embedding { done: u32, total: u32 },
     Done,
 }
 
@@ -36,9 +35,8 @@ impl Progress for ChanProgress {
     fn on_done(&self, _stats: &IngestStats) {}
 }
 
-pub fn run(reindex: bool, no_vector: bool) -> Result<()> {
+pub fn run(reindex: bool) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Phase>();
-    let do_embed = !no_vector;
 
     thread::spawn(move || {
         let mut worker_conn = match index::open() {
@@ -51,16 +49,6 @@ pub fn run(reindex: bool, no_vector: bool) -> Result<()> {
         };
         let progress = ChanProgress(tx.clone());
         let _ = index::ingest::scan_and_update(&mut worker_conn, reindex, &progress);
-
-        #[cfg(feature = "embed")]
-        if do_embed {
-            let tx2 = tx.clone();
-            let _ = index::embed::refresh_embeddings(&mut worker_conn, 16, |done, total| {
-                let _ = tx2.send(Phase::Embedding { done, total });
-            });
-        }
-        #[cfg(not(feature = "embed"))]
-        let _ = do_embed;
         let _ = tx.send(Phase::Done);
     });
 
@@ -99,7 +87,6 @@ fn render(p: &Phase, tick: usize) -> String {
     match p {
         Phase::Starting => format!("{} starting…", spinner),
         Phase::Scanning { done, total } => format!("{} indexing {}/{}", spinner, done, total),
-        Phase::Embedding { done, total } => format!("{} embedding {}/{}", spinner, done, total),
         Phase::Done => String::new(),
     }
 }

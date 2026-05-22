@@ -113,7 +113,6 @@ pub fn scan_and_update(
         .collect();
     for id in &to_delete {
         conn.execute("DELETE FROM sessions WHERE session_id = ?", params![id])?;
-        let _ = conn.execute("DELETE FROM sessions_vec WHERE session_id = ?", params![id]);
         stats.deleted += 1;
     }
 

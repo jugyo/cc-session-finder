@@ -1,8 +1,6 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const EMBED_DIM: usize = 384;
-
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
@@ -16,7 +14,6 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             r#"
             DROP TABLE IF EXISTS sessions_fts;
-            DROP TABLE IF EXISTS sessions_vec;
             DROP TABLE IF EXISTS sessions;
             "#,
         )?;
@@ -68,15 +65,6 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         END;
         "#,
     )?;
-
-    let vec_sql = format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS sessions_vec USING vec0(
-            session_id TEXT PRIMARY KEY,
-            embedding FLOAT[{}]
-        );",
-        EMBED_DIM
-    );
-    conn.execute_batch(&vec_sql)?;
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())

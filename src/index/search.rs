@@ -31,7 +31,6 @@ pub struct Hit {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Scores {
     pub keyword: Option<f64>,
-    pub vector: Option<f64>,
     pub recency: Option<f64>,
 }
 
@@ -246,67 +245,6 @@ fn annotate(mut hits: Vec<Hit>, cwd: Option<&str>) -> Vec<Hit> {
     hits
 }
 
-/// Vector KNN search. Embeds the query, runs `sessions_vec MATCH`, and
-/// hydrates the matched rows from `sessions`. Results are annotated with the
-/// `vec` label and the cosine-distance score (lower = more similar).
-#[cfg(feature = "embed")]
-pub fn vector(
-    conn: &Connection,
-    query: &str,
-    cwd: Option<&Path>,
-    cwd_only: bool,
-    limit: usize,
-) -> Result<Vec<Hit>> {
-    if query.trim().is_empty() {
-        return Ok(vec![]);
-    }
-    let qv = crate::index::embed::embed_query(query)?;
-    let k_expand = (limit * 2).max(20);
-    let matches = crate::index::embed::knn(conn, &qv, k_expand)?;
-    if matches.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
-    let mut out: Vec<Hit> = Vec::with_capacity(matches.len());
-    for (session_id, dist) in matches {
-        if let Some(mut h) = show(conn, &session_id)? {
-            if cwd_only {
-                if let Some(c) = cwd_s.as_deref() {
-                    if c != h.cwd {
-                        continue;
-                    }
-                }
-            }
-            h.scores.vector = Some(dist);
-            h.scores.recency = Some(recency_score(h.mtime));
-            h.labels.push("semantic".to_string());
-            out.push(h);
-        }
-        if out.len() >= limit {
-            break;
-        }
-    }
-    Ok(annotate(out, cwd_s.as_deref()))
-}
-
-/// Merge keyword and vector hits, deduping by session_id (keyword wins). The
-/// returned vector keeps keyword hits first, then vector-only hits.
-pub fn merge(mut kw: Vec<Hit>, vec_hits: Vec<Hit>) -> Vec<Hit> {
-    let seen: std::collections::HashSet<String> = kw.iter().map(|h| h.session_id.clone()).collect();
-    for mut h in vec_hits {
-        if seen.contains(&h.session_id) {
-            continue;
-        }
-        // Vector-only hits: ensure the `semantic` label is present.
-        if !h.labels.iter().any(|l| l == "semantic") {
-            h.labels.push("semantic".to_string());
-        }
-        kw.push(h);
-    }
-    kw
-}
-
 /// Fetch a single session by id.
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<Hit>> {
     let sql = format!("SELECT {HIT_COLS} FROM sessions WHERE session_id = ?");
@@ -373,7 +311,6 @@ mod tests {
     // ---- integration tests against an in-memory DB ----
 
     fn open_indexed_db() -> Connection {
-        crate::index::register_sqlite_vec();
         let conn = Connection::open_in_memory().expect("open in-memory db");
         crate::index::schema::ensure(&conn).expect("schema");
         conn

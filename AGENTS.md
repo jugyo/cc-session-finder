@@ -10,9 +10,9 @@ For the user-facing overview, installation, and usage, see
 ## What this project is
 
 A Rust TUI / CLI that indexes the JSONL sessions Claude Code writes under
-`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` into SQLite, then runs
-FTS5 (keyword) and sqlite-vec (semantic) search in parallel. Pressing Enter
-execs `claude --resume <session-id>`.
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` into SQLite and runs
+FTS5 keyword search over them. Pressing Enter execs
+`claude --resume <session-id>`.
 
 ## Key constraints
 
@@ -23,10 +23,6 @@ execs `claude --resume <session-id>`.
   concurrent reader / writer access.
 - **`--reset` is destructive.** Don't use it without explicit user
   permission; `--reindex` is enough in almost every case.
-- **Semantic search depends on the `embed` feature**, which is on by
-  default but can be turned off with `cargo build --no-default-features`.
-  Keep both feature variants compiling — `#[cfg(feature = "embed")]`
-  branches must stay in sync (CI builds both).
 
 ## Module layout
 
@@ -44,8 +40,7 @@ src/
 │   ├── mod.rs        # Public API (open, db_path)
 │   ├── schema.rs     # Migrations
 │   ├── ingest.rs     # Incremental scan + UPSERT
-│   ├── embed.rs      # fastembed wrapper (feature = "embed")
-│   └── search.rs     # FTS5 / vec0 queries and merge
+│   └── search.rs     # FTS5 keyword queries
 ├── session.rs        # JSONL parser → SessionRecord
 ├── paths.rs          # cwd <-> project_dir encoding, cache root
 ├── relative_time.rs  # "3h ago" style relative timestamps
@@ -56,14 +51,12 @@ src/
 ## Development workflow
 
 ```sh
-cargo build  --all-features
-cargo test   --all-features
+cargo build
+cargo test
 cargo fmt    --all
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
-- Always include `--all-features` for `cargo build` locally. Default-feature-
-  only builds can mask embed-related compile errors that CI will catch later.
 - To exercise the TUI by hand, just `cargo run` (no args ⇒ TUI). For CLI
   smoke tests, `cargo run -- list --limit 5 | jq` works well.
 - For verbose logs, set `CC_SESSION_FINDER_LOG=debug`.
@@ -152,13 +145,11 @@ Agent-specific reminders:
   `~/.cargo/bin/`)
 - Leaving floating tags (`@v4`, `@stable`) in GitHub Actions workflows
 - Pushing `git push origin vX.Y.Z` on your own
-- Writing code that assumes the `embed` feature is on without a `#[cfg]`
-  branch (the `--no-default-features` job in CI will catch this)
 
 ## References
 
 - [README.md](README.md) — user-facing docs
-- [docs/plan.md](docs/plan.md) — architecture and design rationale
-- [sqlite-vec](https://github.com/asg017/sqlite-vec)
-- [fastembed-rs](https://github.com/Anush008/fastembed-rs)
+- [docs/plan.md](docs/plan.md) — architecture and design rationale (historical;
+  documents the earlier keyword + semantic design before semantic search was
+  removed)
 - [ratatui](https://ratatui.rs/)
