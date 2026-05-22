@@ -5,7 +5,7 @@ Guide for AI coding agents working in this repository.
 
 For the user-facing overview, installation, and usage, see
 [`README.md`](README.md). For the design rationale and decision history, see
-[`docs/plan.md`](docs/plan.md).
+[`.docs/plan.md`](.docs/plan.md).
 
 ## What this project is
 
@@ -149,7 +149,7 @@ Agent-specific reminders:
 ## References
 
 - [README.md](README.md) — user-facing docs
-- [docs/plan.md](docs/plan.md) — architecture and design rationale (historical;
+- [.docs/plan.md](.docs/plan.md) — architecture and design rationale (historical;
   documents the earlier keyword + semantic design before semantic search was
   removed)
 - [ratatui](https://ratatui.rs/)
