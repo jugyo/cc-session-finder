@@ -2,7 +2,7 @@
 name = "cc-session-finder"
 version = "0.1.0"
 edition = "2021"
-description = "Fast keyword finder for Claude Code sessions"
+description = "Fast full-text search for Claude Code sessions"
 license = "MIT"
 
 [[bin]]

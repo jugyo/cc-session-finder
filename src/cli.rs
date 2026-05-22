@@ -23,7 +23,7 @@ struct OutputDoc<'a> {
 #[derive(Serialize)]
 struct OutputStats {
     total_sessions: i64,
-    keyword_hits: usize,
+    text_search_hits: usize,
     took_ms: u128,
 }
 
@@ -55,7 +55,7 @@ pub fn run_search(args: SearchArgs, reindex: bool) -> Result<ExitCode> {
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
 
-    let hits = index::search::keyword(
+    let hits = index::search::text_search(
         &conn,
         &args.query,
         cwd.as_deref(),
@@ -140,9 +140,9 @@ fn write_results(
                 results: hits,
                 stats: OutputStats {
                     total_sessions,
-                    keyword_hits: hits
+                    text_search_hits: hits
                         .iter()
-                        .filter(|h| h.labels.iter().any(|l| l == "keyword"))
+                        .filter(|h| h.labels.iter().any(|l| l == "match"))
                         .count(),
                     took_ms: start.elapsed().as_millis(),
                 },

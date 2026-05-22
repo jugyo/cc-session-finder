@@ -30,7 +30,7 @@ pub struct Hit {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Scores {
-    pub keyword: Option<f64>,
+    pub text_search: Option<f64>,
     pub recency: Option<f64>,
 }
 
@@ -97,9 +97,9 @@ pub fn list(
     Ok(annotate(rows, cwd_s.as_deref()))
 }
 
-/// FTS5 keyword search using trigram tokens. The query is matched as a
+/// FTS5 text search using trigram tokens. The query is matched as a
 /// prefix-allowing phrase. cwd boost and recency are applied client-side.
-pub fn keyword(
+pub fn text_search(
     conn: &Connection,
     query: &str,
     cwd: Option<&Path>,
@@ -150,16 +150,16 @@ pub fn keyword(
                 _ => 0.0,
             };
             let composite = -rank + cwd_boost * 2.0 + recency * 1.0;
-            h.scores.keyword = Some(composite);
+            h.scores.text_search = Some(composite);
             h.scores.recency = Some(recency);
-            h.labels.push("keyword".to_string());
+            h.labels.push("match".to_string());
             h
         })
         .collect();
     scored.sort_by(|a, b| {
         b.scores
-            .keyword
-            .partial_cmp(&a.scores.keyword)
+            .text_search
+            .partial_cmp(&a.scores.text_search)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     scored.truncate(limit);
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn keyword_matches_against_cwd() {
+    fn text_search_matches_against_cwd() {
         let conn = open_indexed_db();
         insert_session(
             &conn,
@@ -362,12 +362,12 @@ mod tests {
             Some("hello world"),
         );
 
-        let hits = keyword(&conn, "session-finder", None, false, 10).unwrap();
+        let hits = text_search(&conn, "session-finder", None, false, 10).unwrap();
         assert!(hits.iter().any(|h| h.session_id == "s1"), "{hits:?}");
     }
 
     #[test]
-    fn keyword_and_spans_metadata_and_cwd_columns() {
+    fn text_search_ands_metadata_and_cwd_columns() {
         let conn = open_indexed_db();
         insert_session(
             &conn,
@@ -384,19 +384,19 @@ mod tests {
             Some("hello again"),
         );
 
-        let hits = keyword(&conn, "hello session-finder", None, false, 10).unwrap();
+        let hits = text_search(&conn, "hello session-finder", None, false, 10).unwrap();
         let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
         assert!(ids.contains(&"s1"), "{ids:?}");
         assert!(!ids.contains(&"s2"), "{ids:?}");
     }
 
     #[test]
-    fn keyword_ranks_first_prompt_above_title_match() {
+    fn text_search_ranks_first_prompt_above_title_match() {
         let conn = open_indexed_db();
         insert_session(&conn, "title", "/p", Some("phaseone ranking"), None);
         insert_session(&conn, "prompt", "/p", None, Some("phaseone ranking"));
 
-        let hits = keyword(&conn, "phaseone", None, false, 10).unwrap();
+        let hits = text_search(&conn, "phaseone", None, false, 10).unwrap();
         let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
 
         assert_eq!(ids.first(), Some(&"prompt"));

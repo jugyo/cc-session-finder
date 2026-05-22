@@ -1,10 +1,10 @@
 # cc-session-finder
 
-Fast keyword finder for [Claude Code](https://claude.com/claude-code) sessions.
+Fast full-text search for [Claude Code](https://claude.com/claude-code) sessions.
 
 `claude --resume`'s built-in picker is a simple chronological list, which makes
 finding old sessions tedious. `cc-session-finder` indexes every JSONL session
-under `~/.claude/projects/` into SQLite and runs **FTS5 keyword search** from a
+under `~/.claude/projects/` into SQLite and runs **FTS5 text search** from a
 TUI. Selecting a result execs `claude --resume <session-id>` in place.
 
 - Incremental search in a TUI
@@ -70,7 +70,7 @@ cc-session-finder graphql
 | Label | Meaning |
 | -- | -- |
 | `[cwd]` | Session's `cwd` matches the current working directory |
-| `[keyword]` | Matched by FTS5 keyword search |
+| `[match]` | Matched by FTS5 text search |
 | `[recent]` | Default label when the query is empty (newest-first) |
 
 ### CLI mode (for AI agents / scripts)

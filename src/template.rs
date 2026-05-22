@@ -194,7 +194,7 @@ fn render_field(field: Field, hit: &Hit) -> Option<String> {
 fn label_style(label: &str) -> (String, Color) {
     match label {
         "cwd" => ("[cwd]".to_string(), Color::Green),
-        "keyword" => ("[keyword]".to_string(), Color::Yellow),
+        "match" => ("[match]".to_string(), Color::Yellow),
         "recent" => ("[recent]".to_string(), Color::DarkGray),
         other => (format!("[{}]", other), Color::Gray),
     }
@@ -240,7 +240,7 @@ pub fn truncate_to_width(s: &str, max_cols: u16) -> String {
 /// Default row layout used by the TUI:
 ///
 /// ```text
-/// [cwd][keyword]  3h  project/leaf  Title — first prompt …  repo#1234 (wt)
+/// [cwd][match]  3h  project/leaf  Title — first prompt …  repo#1234 (wt)
 /// ```
 pub fn default_row_template() -> Vec<Part> {
     let dim = Style::default().fg(Color::DarkGray);

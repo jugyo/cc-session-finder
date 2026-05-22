@@ -1,5 +1,5 @@
 //! TUI event loop. Indexing is handled in [`super::indexing`] before this
-//! starts; here we only handle user input and keyword search.
+//! starts; here we only handle user input and text search.
 
 use std::io::{self, Stdout};
 use std::process::ExitCode;
@@ -289,7 +289,7 @@ fn refresh_results(conn: &Arc<Mutex<rusqlite::Connection>>, state: &mut AppState
     state.results = if q.trim().is_empty() {
         index::search::list(&conn, cwd.as_deref(), false, None, 100)?
     } else {
-        index::search::keyword(&conn, &q, cwd.as_deref(), false, 100)?
+        index::search::text_search(&conn, &q, cwd.as_deref(), false, 100)?
     };
     state.selected = 0;
     Ok(())
