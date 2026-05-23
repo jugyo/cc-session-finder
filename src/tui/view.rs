@@ -5,11 +5,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::app::AppState;
 use crate::index::search::Hit;
-use crate::template;
 
+const TRIGRAM_MIN_LEN: usize = 3;
 const SNIPPET_LINE_WIDTH: usize = 72;
 
 pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
@@ -61,18 +63,19 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
         return;
     }
 
-    let template_parts = template::default_row_template();
-    let highlight_terms = template::highlight_terms(state.editor.query());
+    let highlight_terms = highlight_terms(state.editor.query());
+    let content_width = inner.width;
     let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
-        .map(|hit| {
+        .enumerate()
+        .map(|(i, hit)| {
+            let selected = i == state.selected;
             render_result_lines(
                 hit,
-                &template_parts,
-                inner.width,
-                state.explain,
-                state.snippet_lines,
+                content_width,
+                state.explain && selected,
+                if selected { state.snippet_lines } else { 0 },
                 &highlight_terms,
             )
         })
@@ -80,7 +83,6 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     let item_heights: Vec<usize> = items.iter().map(|lines| item_height(lines)).collect();
     let offset = result_scroll_offset(&item_heights, state.selected, viewport_height);
 
-    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let mut y = inner.y;
 
     for (i, lines) in items.iter().enumerate().skip(offset) {
@@ -89,16 +91,12 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
         }
         let is_sel = i == state.selected;
 
-        for line in lines {
+        for (line_index, line) in lines.iter().enumerate() {
             if y >= inner.bottom() {
                 break;
             }
 
-            let line = if is_sel {
-                line.clone().style(selected_style)
-            } else {
-                line.clone()
-            };
+            let line = result_line_with_cursor(line, is_sel && line_index == 0);
             let row_area = Rect::new(inner.x, y, inner.width, 1);
             f.render_widget(Paragraph::new(line), row_area);
             y = y.saturating_add(1);
@@ -106,20 +104,33 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
+fn result_line_with_cursor(line: &Line<'static>, selected_first_line: bool) -> Line<'static> {
+    if !selected_first_line {
+        return line.clone();
+    }
+
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::styled(
+        "> ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.extend(line.spans.clone());
+    Line::from(spans)
+}
+
 fn render_result_lines(
     hit: &Hit,
-    template_parts: &[template::Part],
     width: u16,
     explain: bool,
     snippet_lines: usize,
     highlight_terms: &[String],
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(template::render(
-        template_parts,
-        hit,
-        width,
-        highlight_terms,
-    ))];
+    let mut lines = vec![
+        title_line(hit, width, highlight_terms),
+        metadata_line(hit, width),
+    ];
     for line in snippet_lines_for_hit(hit, width, snippet_lines, highlight_terms) {
         lines.push(line);
     }
@@ -132,6 +143,49 @@ fn render_result_lines(
         }
     }
     lines
+}
+
+fn title_line(hit: &Hit, width: u16, highlight_terms: &[String]) -> Line<'static> {
+    let title = display_title(hit);
+    Line::from(split_with_highlight(
+        &truncate_to_width(&title, width.saturating_sub(2)),
+        Style::default().add_modifier(Modifier::BOLD),
+        highlight_terms,
+    ))
+}
+
+fn metadata_line(hit: &Hit, width: u16) -> Line<'static> {
+    let mut parts = vec![crate::relative_time::format_age(hit.mtime)];
+    if let Some(branch) = hit
+        .git_branch
+        .as_deref()
+        .filter(|branch| !branch.is_empty())
+    {
+        parts.push(branch.to_string());
+    }
+
+    let tokens = hit
+        .tokens_input
+        .saturating_add(hit.tokens_output)
+        .saturating_add(hit.tokens_cache_read)
+        .saturating_add(hit.tokens_cache_create);
+    if tokens > 0 {
+        parts.push(crate::relative_time::format_count(tokens));
+    }
+    parts.push(short_project(&hit.cwd));
+
+    Line::from(Span::styled(
+        truncate_to_width(&format!("  {}", parts.join(" · ")), width),
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
+fn display_title(hit: &Hit) -> String {
+    hit.ai_title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| hit.first_prompt.as_deref().map(one_line))
+        .unwrap_or_else(|| hit.session_id.clone())
 }
 
 fn item_height(lines: &[Line<'static>]) -> usize {
@@ -158,7 +212,7 @@ fn snippet_lines_for_hit(
     let mut lines: Vec<Line<'static>> = wrap_snippet(&one_line(snippet), width, max_lines)
         .into_iter()
         .map(|line| {
-            Line::from(template::split_with_highlight(
+            Line::from(split_with_highlight(
                 &line,
                 Style::default().fg(Color::Gray),
                 highlight_terms,
@@ -223,8 +277,151 @@ fn fit_width(line: String, width: u16) -> String {
     line.chars().take(width).collect()
 }
 
+fn truncate_to_width(s: &str, max_cols: u16) -> String {
+    let max_cols = max_cols as usize;
+    if max_cols == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(s) <= max_cols {
+        return s.to_string();
+    }
+    if max_cols == 1 {
+        return "...".to_string();
+    }
+    let budget = max_cols - 1;
+    let mut out = String::new();
+    let mut w = 0usize;
+    for g in s.graphemes(true) {
+        let gw = UnicodeWidthStr::width(g);
+        if w + gw > budget {
+            break;
+        }
+        out.push_str(g);
+        w += gw;
+    }
+    out.push('…');
+    out
+}
+
 fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn short_project(cwd: &str) -> String {
+    let parts: Vec<&str> = cwd.trim_start_matches('/').split('/').collect();
+    let n = parts.len();
+    if n >= 2 {
+        format!("{}/{}", parts[n - 2], parts[n - 1])
+    } else {
+        cwd.to_string()
+    }
+}
+
+fn highlight_terms(query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for (raw_index, raw) in query.split_whitespace().enumerate() {
+        push_highlight_term(raw, raw_index > 0, &mut terms);
+
+        let mut part = String::new();
+        let mut part_index = 0usize;
+        for ch in raw.chars() {
+            if ch.is_alphanumeric() {
+                part.push(ch);
+            } else {
+                push_highlight_term(&part, raw_index > 0 || part_index > 0, &mut terms);
+                part.clear();
+                part_index += 1;
+            }
+        }
+        push_highlight_term(&part, raw_index > 0 || part_index > 0, &mut terms);
+    }
+    terms
+}
+
+fn push_highlight_term(term: &str, allow_short: bool, terms: &mut Vec<String>) {
+    let trimmed = term.trim_matches(|ch: char| !ch.is_alphanumeric());
+    if !is_highlightable_term(trimmed, allow_short) {
+        return;
+    }
+    let term = trimmed.to_lowercase();
+    if !terms.iter().any(|existing| existing == &term) {
+        terms.push(term);
+    }
+}
+
+fn is_highlightable_term(term: &str, allow_short: bool) -> bool {
+    let char_count = term.chars().count();
+    char_count >= TRIGRAM_MIN_LEN
+        || (allow_short
+            && char_count >= 2
+            && term.chars().all(|ch| ch.is_ascii_alphabetic())
+            && is_short_acronym(term))
+}
+
+fn is_short_acronym(term: &str) -> bool {
+    matches!(
+        term.to_ascii_lowercase().as_str(),
+        "ai" | "ui" | "ux" | "ml" | "db" | "id" | "pr" | "ci" | "cd"
+    )
+}
+
+fn split_with_highlight(text: &str, base: Style, terms: &[String]) -> Vec<Span<'static>> {
+    if text.is_empty() || terms.is_empty() {
+        return vec![Span::styled(text.to_string(), base)];
+    }
+
+    let lower = text.to_lowercase();
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    for (start, end) in highlight_ranges(&lower, text, terms) {
+        if start > pos {
+            spans.push(Span::styled(text[pos..start].to_string(), base));
+        }
+        spans.push(Span::styled(
+            text[start..end].to_string(),
+            base.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+        pos = end;
+    }
+
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_string(), base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base));
+    }
+    spans
+}
+
+fn highlight_ranges(
+    lower_text: &str,
+    original_text: &str,
+    terms: &[String],
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for term in terms {
+        if term.is_empty() {
+            continue;
+        }
+        for (start, _) in lower_text.match_indices(term) {
+            let end = start + term.len();
+            if original_text.is_char_boundary(start) && original_text.is_char_boundary(end) {
+                ranges.push((start, end));
+            }
+        }
+    }
+    ranges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+
+    let mut selected = Vec::new();
+    let mut pos = 0usize;
+    for (start, end) in ranges {
+        if start < pos {
+            continue;
+        }
+        selected.push((start, end));
+        pos = end;
+    }
+    selected
 }
 
 fn wrap_snippet(s: &str, width: u16, max_lines: usize) -> Vec<String> {
@@ -346,38 +543,62 @@ mod tests {
     }
 
     #[test]
+    fn selected_result_line_gets_cursor_prefix() {
+        let line = Line::from(Span::raw("result"));
+
+        let decorated = result_line_with_cursor(&line, true);
+
+        assert_eq!(decorated.spans[0].content.as_ref(), "> ");
+        assert_eq!(decorated.spans[1].content.as_ref(), "result");
+        assert!(decorated.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn unselected_result_line_is_not_indented() {
+        let line = Line::from(Span::raw("result"));
+
+        let decorated = result_line_with_cursor(&line, false);
+
+        assert_eq!(decorated.spans.len(), 1);
+        assert_eq!(decorated.spans[0].content.as_ref(), "result");
+    }
+
+    #[test]
     fn snippet_adds_two_lines_when_available() {
         let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2, &[]);
+        let lines = render_result_lines(&hit, 80, false, 2, &[]);
 
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         assert_eq!(
-            lines[1].spans[0].content.as_ref(),
+            lines[2].spans[0].content.as_ref(),
             "  before [needle] after"
         );
-        assert_eq!(lines[2].spans[0].content.as_ref(), "  ");
+        assert_eq!(lines[3].spans[0].content.as_ref(), "  ");
     }
 
     #[test]
     fn snippet_wraps_to_two_lines_by_default() {
         let hit = hit_with_snippet(Some("one two three four five six seven"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 2, &[]);
+        let lines = render_result_lines(&hit, 18, false, 2, &[]);
 
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1].spans[0].content.as_ref(), "  one two three");
-        assert_eq!(lines[2].spans[0].content.as_ref(), "  four five six");
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[2].spans[0].content.as_ref(), "  one two three");
+        assert_eq!(lines[3].spans[0].content.as_ref(), "  four five six");
     }
 
     #[test]
     fn snippet_line_count_is_configurable() {
         let hit = hit_with_snippet(Some("one two three four five six seven"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 3, &[]);
+        let lines = render_result_lines(&hit, 18, false, 3, &[]);
 
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[3].spans[0].content.as_ref(), "  seven");
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[4].spans[0].content.as_ref(), "  seven");
     }
 
     #[test]
@@ -385,39 +606,31 @@ mod tests {
         let snippet = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen";
         let hit = hit_with_snippet(Some(snippet), Some("user"));
 
-        let lines =
-            render_result_lines(&hit, &template::default_row_template(), 200, false, 2, &[]);
+        let lines = render_result_lines(&hit, 200, false, 2, &[]);
 
-        assert_eq!(lines.len(), 3);
-        assert!(lines[1].spans[0].content.chars().count() <= SNIPPET_LINE_WIDTH + 2);
+        assert_eq!(lines.len(), 4);
         assert!(lines[2].spans[0].content.chars().count() <= SNIPPET_LINE_WIDTH + 2);
+        assert!(lines[3].spans[0].content.chars().count() <= SNIPPET_LINE_WIDTH + 2);
     }
 
     #[test]
     fn snippet_lines_zero_hides_snippet() {
         let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 0, &[]);
+        let lines = render_result_lines(&hit, 80, false, 0, &[]);
 
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
     fn snippet_highlights_query_terms() {
         let hit = hit_with_snippet(Some("before Alpha then Beta after"), Some("user"));
-        let terms = template::highlight_terms("alpha beta");
+        let terms = highlight_terms("alpha beta");
 
-        let lines = render_result_lines(
-            &hit,
-            &template::default_row_template(),
-            80,
-            false,
-            2,
-            &terms,
-        );
+        let lines = render_result_lines(&hit, 80, false, 2, &terms);
 
-        assert_eq!(lines.len(), 3);
-        let highlighted: Vec<_> = lines[1]
+        assert_eq!(lines.len(), 4);
+        let highlighted: Vec<_> = lines[2]
             .spans
             .iter()
             .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
@@ -430,9 +643,9 @@ mod tests {
     fn snippet_is_omitted_when_missing() {
         let hit = hit_with_snippet(None, None);
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2, &[]);
+        let lines = render_result_lines(&hit, 80, false, 2, &[]);
 
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
@@ -446,13 +659,13 @@ mod tests {
             ..Scores::default()
         };
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[1].spans[0].content.as_ref(), "  body [needle] text");
-        assert_eq!(lines[2].spans[0].content.as_ref(), "  ");
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[2].spans[0].content.as_ref(), "  body [needle] text");
+        assert_eq!(lines[3].spans[0].content.as_ref(), "  ");
         assert_eq!(
-            lines[3].spans[0].content.as_ref(),
+            lines[4].spans[0].content.as_ref(),
             "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
         );
     }
@@ -461,11 +674,11 @@ mod tests {
     fn snippet_line_is_clipped_to_width() {
         let hit = hit_with_snippet(Some("1234567890"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 12, false, 2, &[]);
+        let lines = render_result_lines(&hit, 12, false, 2, &[]);
 
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1].spans[0].content.as_ref(), "  1234567890");
-        assert_eq!(lines[2].spans[0].content.as_ref(), "  ");
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[2].spans[0].content.as_ref(), "  1234567890");
+        assert_eq!(lines[3].spans[0].content.as_ref(), "  ");
     }
 
     #[test]
@@ -478,11 +691,11 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert_eq!(
-            lines[1].spans[0].content.as_ref(),
+            lines[2].spans[0].content.as_ref(),
             "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
         );
     }
@@ -498,11 +711,11 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert_eq!(
-            lines[1].spans[0].content.as_ref(),
+            lines[2].spans[0].content.as_ref(),
             "  score 3.41 = metadata 2.50 + message 0.75 + count 0.16 (2 hits)"
         );
     }
@@ -511,9 +724,9 @@ mod tests {
     fn explain_omits_score_line_when_scores_are_missing() {
         let hit = hit_with_scores(Scores::default());
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]

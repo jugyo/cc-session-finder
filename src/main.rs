@@ -9,7 +9,6 @@ mod launch;
 mod paths;
 mod relative_time;
 mod session;
-mod template;
 mod tui;
 
 #[derive(Debug, Parser)]
