@@ -1,5 +1,6 @@
 //! SQL queries used by both the TUI and CLI search paths.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -45,6 +46,18 @@ pub struct Scores {
     pub recency: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_bm25_rank: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_weighted_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_match_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count_bonus: Option<f64>,
 }
 
 /// Recency factor in [0, 1] using a log decay on age in days.
@@ -78,6 +91,10 @@ fn register_search_functions(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+
+const MESSAGE_SCORE_WEIGHT: f64 = 0.75;
+const MESSAGE_COUNT_BONUS_FACTOR: f64 = 0.15;
+const MESSAGE_COUNT_BONUS_CAP: f64 = 0.5;
 
 /// Newest sessions, optionally restricted to a cwd.
 pub fn list(
@@ -149,8 +166,52 @@ pub fn text_search(
 
     register_search_functions(conn)?;
 
+    let mut hits_by_id: HashMap<String, Hit> = HashMap::new();
+    for mut hit in metadata_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
+        let metadata_score = hit.scores.final_score.unwrap_or(0.0);
+        hit.scores.metadata_score = Some(metadata_score);
+        hit.scores.text_search = Some(metadata_score);
+        hit.labels.push("match".to_string());
+        hits_by_id.insert(hit.session_id.clone(), hit);
+    }
+
+    for message_hit in message_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
+        let entry = hits_by_id
+            .entry(message_hit.hit.session_id.clone())
+            .or_insert_with(|| {
+                let mut hit = message_hit.hit.clone();
+                let base_score = message_hit.cwd_score + message_hit.recency;
+                hit.scores.cwd_boost = Some(message_hit.cwd_boost);
+                hit.scores.cwd_score = Some(message_hit.cwd_score);
+                hit.scores.recency = Some(message_hit.recency);
+                hit.scores.metadata_score = Some(base_score);
+                hit.labels.push("match".to_string());
+                hit
+            });
+        apply_message_score(entry, &message_hit);
+    }
+
+    let mut hits: Vec<Hit> = hits_by_id.into_values().collect();
+    hits.sort_by(|a, b| {
+        b.scores
+            .final_score
+            .partial_cmp(&a.scores.final_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.mtime.cmp(&a.mtime))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    hits.truncate(limit);
+
+    Ok(annotate(hits, cwd_s.as_deref()))
+}
+
+fn metadata_hits(
+    conn: &Connection,
+    q: &str,
+    cwd: Option<&str>,
+    cwd_only: bool,
+) -> Result<Vec<Hit>> {
     let cwd_boost_param = if cwd_only { "?3" } else { "?2" };
-    let limit_param = if cwd_only { "?4" } else { "?3" };
     let mut sql = "WITH ranked AS (
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
@@ -186,22 +247,16 @@ pub fn text_search(
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 bm25_rank, keyword_score, cwd_boost, cwd_score, recency, final_score
          FROM scored
-         ORDER BY final_score DESC, bm25_rank ASC, mtime DESC, session_id ASC
-         LIMIT {limit_param}"
+         ORDER BY final_score DESC, bm25_rank ASC, mtime DESC, session_id ASC"
     ));
 
     let mut stmt = conn.prepare(&sql)?;
 
     let mut hits: Vec<Hit> = Vec::new();
     let mut rows = if cwd_only {
-        stmt.query(params![
-            q,
-            cwd_s.as_deref().unwrap_or(""),
-            cwd_s.as_deref(),
-            limit as i64
-        ])?
+        stmt.query(params![q, cwd.unwrap_or(""), cwd])?
     } else {
-        stmt.query(params![q, cwd_s.as_deref(), limit as i64])?
+        stmt.query(params![q, cwd])?
     };
     while let Some(r) = rows.next()? {
         let mut h = map_hit(r)?;
@@ -213,11 +268,112 @@ pub fn text_search(
         h.scores.cwd_score = Some(r.get(19).unwrap_or(0.0));
         h.scores.recency = Some(r.get(20).unwrap_or(0.0));
         h.scores.final_score = Some(final_score);
-        h.labels.push("match".to_string());
         hits.push(h);
     }
 
-    Ok(annotate(hits, cwd_s.as_deref()))
+    Ok(hits)
+}
+
+#[derive(Clone)]
+struct MessageHit {
+    hit: Hit,
+    bm25_rank: f64,
+    match_count: u32,
+    cwd_boost: f64,
+    cwd_score: f64,
+    recency: f64,
+}
+
+fn message_hits(
+    conn: &Connection,
+    q: &str,
+    cwd: Option<&str>,
+    cwd_only: bool,
+) -> Result<Vec<MessageHit>> {
+    let cwd_boost_param = if cwd_only { "?3" } else { "?2" };
+    let mut sql = format!(
+        "WITH scored AS (
+             SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
+                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
+                    s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
+                    bm25(messages_fts) AS rank,
+                    CASE
+                        WHEN {cwd_boost_param} IS NOT NULL AND s.cwd = {cwd_boost_param} THEN 1.0
+                        ELSE 0.0
+                    END AS cwd_boost,
+                    ccsf_recency_score(s.mtime) AS recency
+             FROM messages_fts
+             JOIN messages m ON m.id = messages_fts.rowid
+             JOIN sessions s ON s.session_id = m.session_id
+             WHERE messages_fts MATCH ?1"
+    );
+    if cwd_only {
+        sql.push_str(" AND s.cwd = ?2");
+    }
+    sql.push_str(
+        "
+         )
+         SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
+                git_branch, pr_number, pr_url, pr_repo, project_dir,
+                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                rank, cwd_boost, cwd_boost * 2.0 AS cwd_score, recency
+         FROM scored
+         ORDER BY rank ASC, mtime DESC, session_id ASC",
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = if cwd_only {
+        stmt.query(params![q, cwd.unwrap_or(""), cwd])?
+    } else {
+        stmt.query(params![q, cwd])?
+    };
+
+    let mut hits_by_id: HashMap<String, MessageHit> = HashMap::new();
+    while let Some(r) = rows.next()? {
+        let hit = map_hit(r)?;
+        let bm25_rank = r.get(16).unwrap_or(0.0);
+        let cwd_boost = r.get(17).unwrap_or(0.0);
+        let cwd_score = r.get(18).unwrap_or(0.0);
+        let recency = r.get(19).unwrap_or(0.0);
+        hits_by_id
+            .entry(hit.session_id.clone())
+            .and_modify(|message_hit| {
+                message_hit.match_count = message_hit.match_count.saturating_add(1);
+                if bm25_rank < message_hit.bm25_rank {
+                    message_hit.bm25_rank = bm25_rank;
+                }
+            })
+            .or_insert(MessageHit {
+                hit,
+                bm25_rank,
+                match_count: 1,
+                cwd_boost,
+                cwd_score,
+                recency,
+            });
+    }
+
+    Ok(hits_by_id.into_values().collect())
+}
+
+fn apply_message_score(hit: &mut Hit, message_hit: &MessageHit) {
+    let message_score = -message_hit.bm25_rank;
+    let weighted = message_score * MESSAGE_SCORE_WEIGHT;
+    let count_bonus = ((message_hit.match_count as f64).ln_1p() * MESSAGE_COUNT_BONUS_FACTOR)
+        .min(MESSAGE_COUNT_BONUS_CAP);
+    let metadata_score = hit
+        .scores
+        .metadata_score
+        .unwrap_or(message_hit.cwd_score + message_hit.recency);
+    let final_score = metadata_score + weighted + count_bonus;
+
+    hit.scores.message_bm25_rank = Some(message_hit.bm25_rank);
+    hit.scores.message_score = Some(message_score);
+    hit.scores.message_weighted_score = Some(weighted);
+    hit.scores.message_match_count = Some(message_hit.match_count);
+    hit.scores.message_count_bonus = Some(count_bonus);
+    hit.scores.text_search = Some(final_score);
+    hit.scores.final_score = Some(final_score);
 }
 
 /// trigram tokenizer ignores tokens shorter than 3 characters, so we drop them
@@ -399,6 +555,21 @@ mod tests {
             params![id, cwd, ai_title, first_prompt, preview, mtime],
         )
         .expect("insert");
+    }
+
+    fn insert_message(
+        conn: &Connection,
+        session_id: &str,
+        turn_index: i64,
+        role: &str,
+        text: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO messages (session_id, turn_index, role, text)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, turn_index, role, text],
+        )
+        .expect("insert message");
     }
 
     fn assert_close(actual: f64, expected: f64) {
@@ -584,6 +755,96 @@ mod tests {
             Some("cwd-boosted")
         );
         assert_close(hits[0].scores.cwd_boost.expect("cwd boost"), 1.0);
+    }
+
+    #[test]
+    fn text_search_finds_message_only_hit() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", Some("unrelated"), None);
+        insert_message(&conn, "s1", 0, "user", "bodyonly needle appears here");
+
+        let hits = text_search(&conn, "bodyonly", None, false, 10).unwrap();
+        let hit = hits.iter().find(|h| h.session_id == "s1").expect("hit");
+        let scores = &hit.scores;
+
+        assert!(scores.bm25_rank.is_none());
+        assert!(scores.keyword_score.is_none());
+        assert_eq!(scores.message_match_count, Some(1));
+        assert_close(
+            scores.message_score.expect("message score"),
+            -scores.message_bm25_rank.expect("message bm25 rank"),
+        );
+        assert_close(
+            scores
+                .message_weighted_score
+                .expect("weighted message score"),
+            scores.message_score.expect("message score") * MESSAGE_SCORE_WEIGHT,
+        );
+        assert_close(
+            scores.final_score.expect("final score"),
+            scores.metadata_score.expect("metadata score")
+                + scores
+                    .message_weighted_score
+                    .expect("weighted message score")
+                + scores.message_count_bonus.expect("count bonus"),
+        );
+    }
+
+    #[test]
+    fn text_search_merges_metadata_and_message_scores() {
+        let conn = open_indexed_db();
+        insert_session(
+            &conn,
+            "s1",
+            "/repo/current",
+            None,
+            Some("phaseword in prompt"),
+        );
+        insert_message(&conn, "s1", 0, "user", "phaseword in body");
+        insert_message(&conn, "s1", 1, "assistant", "phaseword appears again");
+
+        let hits = text_search(&conn, "phaseword", None, false, 10).unwrap();
+        let hit = hits.iter().find(|h| h.session_id == "s1").expect("hit");
+        let scores = &hit.scores;
+
+        assert_eq!(scores.message_match_count, Some(2));
+        assert!(scores.keyword_score.is_some());
+        assert_close(
+            scores.metadata_score.expect("metadata score"),
+            scores.keyword_score.expect("keyword score")
+                + scores.cwd_score.expect("cwd score")
+                + scores.recency.expect("recency"),
+        );
+        assert_close(
+            scores.final_score.expect("final score"),
+            scores.metadata_score.expect("metadata score")
+                + scores
+                    .message_weighted_score
+                    .expect("weighted message score")
+                + scores.message_count_bonus.expect("count bonus"),
+        );
+        assert_close(
+            scores.message_count_bonus.expect("count bonus"),
+            (2.0_f64.ln_1p() * MESSAGE_COUNT_BONUS_FACTOR).min(MESSAGE_COUNT_BONUS_CAP),
+        );
+    }
+
+    #[test]
+    fn message_match_count_bonus_is_capped() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", None, None);
+        for i in 0..50 {
+            insert_message(&conn, "s1", i, "assistant", "manymatches token");
+        }
+
+        let hits = text_search(&conn, "manymatches", None, false, 10).unwrap();
+        let scores = &hits.first().expect("hit").scores;
+
+        assert_eq!(scores.message_match_count, Some(50));
+        assert_close(
+            scores.message_count_bonus.expect("count bonus"),
+            MESSAGE_COUNT_BONUS_CAP,
+        );
     }
 
     #[test]

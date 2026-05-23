@@ -136,6 +136,17 @@ fn result_scroll_offset(item_heights: &[usize], selected: usize, viewport_height
 fn score_breakdown_line(hit: &Hit, width: u16) -> Option<String> {
     let scores = &hit.scores;
     let final_score = scores.final_score?;
+    if let Some(message) = scores.message_weighted_score {
+        let metadata = scores.metadata_score.unwrap_or(0.0);
+        let count_bonus = scores.message_count_bonus.unwrap_or(0.0);
+        let match_count = scores.message_match_count.unwrap_or(0);
+        let line = format!(
+            "  score {:.2} = metadata {:.2} + message {:.2} + count {:.2} ({} hits)",
+            final_score, metadata, message, count_bonus, match_count
+        );
+        return Some(fit_width(line, width));
+    }
+
     let keyword = scores.keyword_score?;
     let cwd = scores.cwd_score?;
     let recency = scores.recency?;
@@ -221,6 +232,26 @@ mod tests {
         assert_eq!(
             lines[1].spans[0].content.as_ref(),
             "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
+        );
+    }
+
+    #[test]
+    fn explain_adds_message_score_line_when_message_scores_are_available() {
+        let hit = hit_with_scores(Scores {
+            metadata_score: Some(2.5),
+            message_weighted_score: Some(0.75),
+            message_match_count: Some(2),
+            message_count_bonus: Some(0.16),
+            final_score: Some(3.41),
+            ..Scores::default()
+        });
+
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[1].spans[0].content.as_ref(),
+            "  score 3.41 = metadata 2.50 + message 0.75 + count 0.16 (2 hits)"
         );
     }
 
