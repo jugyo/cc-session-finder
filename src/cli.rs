@@ -18,6 +18,8 @@ struct OutputDoc<'a> {
     cwd: Option<String>,
     results: &'a [Hit],
     stats: OutputStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<OutputExplain>,
 }
 
 #[derive(Serialize)]
@@ -25,6 +27,12 @@ struct OutputStats {
     total_sessions: i64,
     text_search_hits: usize,
     took_ms: u128,
+}
+
+#[derive(Serialize)]
+struct OutputExplain {
+    requested: bool,
+    details: &'static str,
 }
 
 fn default_cwd() -> Option<PathBuf> {
@@ -40,17 +48,25 @@ fn maybe_update(reindex: bool, no_update: bool) -> Result<rusqlite::Connection> 
     Ok(conn)
 }
 
-pub fn run_list(args: ListArgs, reindex: bool) -> Result<ExitCode> {
+pub fn run_list(args: ListArgs, reindex: bool, explain: bool) -> Result<ExitCode> {
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
     let since_secs = args.since.as_deref().and_then(parse_duration);
     let hits = index::search::list(&conn, cwd.as_deref(), args.cwd_only, since_secs, args.limit)?;
-    write_results(&hits, None, cwd.as_deref(), args.format, start, &conn)?;
+    write_results(
+        &hits,
+        None,
+        cwd.as_deref(),
+        args.format,
+        start,
+        &conn,
+        explain,
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn run_search(args: SearchArgs, reindex: bool) -> Result<ExitCode> {
+pub fn run_search(args: SearchArgs, reindex: bool, explain: bool) -> Result<ExitCode> {
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
@@ -70,6 +86,7 @@ pub fn run_search(args: SearchArgs, reindex: bool) -> Result<ExitCode> {
         args.format,
         start,
         &conn,
+        explain,
     )?;
     Ok(ExitCode::SUCCESS)
 }
@@ -126,6 +143,7 @@ fn write_results(
     fmt: Format,
     start: std::time::Instant,
     conn: &rusqlite::Connection,
+    explain: bool,
 ) -> Result<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -146,6 +164,10 @@ fn write_results(
                         .count(),
                     took_ms: start.elapsed().as_millis(),
                 },
+                explain: explain.then_some(OutputExplain {
+                    requested: true,
+                    details: "ranking explanations are not available yet",
+                }),
             };
             serde_json::to_writer_pretty(&mut out, &doc)?;
             writeln!(out)?;

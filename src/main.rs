@@ -34,6 +34,10 @@ struct Cli {
     /// from scratch).
     #[arg(long, global = true)]
     reset: bool,
+
+    /// Show ranking explanation details when available
+    #[arg(long, global = true)]
+    explain: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -126,14 +130,14 @@ fn main() -> ExitCode {
     }
 
     let result: anyhow::Result<ExitCode> = match cli.command {
-        Some(Cmd::Search(args)) => cli::run_search(args, cli.reindex),
-        Some(Cmd::List(args)) => cli::run_list(args, cli.reindex),
+        Some(Cmd::Search(args)) => cli::run_search(args, cli.reindex, cli.explain),
+        Some(Cmd::List(args)) => cli::run_list(args, cli.reindex, cli.explain),
         Some(Cmd::Show(args)) => cli::run_show(args),
         Some(Cmd::Index(args)) => cli::run_index(args, cli.reindex),
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         None => {
             if atty::is(atty::Stream::Stdout) {
-                tui::run(cli.query, cli.reindex)
+                tui::run(cli.query, cli.reindex, cli.explain)
             } else {
                 // Non-TTY without subcommand → behave like `list --format json`
                 cli::run_list(
@@ -146,6 +150,7 @@ fn main() -> ExitCode {
                         no_update: false,
                     },
                     cli.reindex,
+                    cli.explain,
                 )
             }
         }

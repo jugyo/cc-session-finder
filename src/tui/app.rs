@@ -29,21 +29,23 @@ pub struct AppState {
     pub selected: usize,
     pub cwd: Option<std::path::PathBuf>,
     pub last_query_at: Option<Instant>,
+    pub explain: bool,
 }
 
 impl AppState {
-    fn new(initial_query: Option<String>) -> Self {
+    fn new(initial_query: Option<String>, explain: bool) -> Self {
         Self {
             editor: QueryEditor::with_initial(initial_query.unwrap_or_default()),
             results: Vec::new(),
             selected: 0,
             cwd: std::env::current_dir().ok(),
             last_query_at: None,
+            explain,
         }
     }
 }
 
-pub fn run(initial_query: Option<String>) -> Result<ExitCode> {
+pub fn run(initial_query: Option<String>, explain: bool) -> Result<ExitCode> {
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -51,7 +53,7 @@ pub fn run(initial_query: Option<String>) -> Result<ExitCode> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let exit_code = run_loop(&mut terminal, initial_query);
+    let exit_code = run_loop(&mut terminal, initial_query, explain);
 
     // Tear down.
     disable_raw_mode()?;
@@ -65,6 +67,7 @@ pub fn run(initial_query: Option<String>) -> Result<ExitCode> {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     initial_query: Option<String>,
+    explain: bool,
 ) -> Result<ExitCode> {
     let (tx, rx) = std_mpsc::channel::<Event>();
 
@@ -89,7 +92,7 @@ fn run_loop(
         });
     }
 
-    let mut state = AppState::new(initial_query);
+    let mut state = AppState::new(initial_query, explain);
 
     // Initial query: list newest (using whatever is already in the DB).
     refresh_results(&conn, &mut state)?;

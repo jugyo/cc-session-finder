@@ -123,15 +123,25 @@ fn result_scroll_offset(item_heights: &[usize], selected: usize, viewport_height
     offset
 }
 
-fn draw_status_bar(f: &mut Frame, area: Rect, _state: &AppState, _tick: usize) {
-    let hint = Line::from(vec![
+fn draw_status_bar(f: &mut Frame, area: Rect, state: &AppState, _tick: usize) {
+    let mut spans = vec![
         Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
         Span::raw(" select  "),
         Span::styled("Enter", Style::default().fg(Color::Cyan)),
         Span::raw(" resume  "),
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" quit"),
-    ]);
+    ];
+
+    if state.explain {
+        spans.extend([
+            Span::raw("  "),
+            Span::styled("explain", Style::default().fg(Color::Cyan)),
+            Span::raw(" requested"),
+        ]);
+    }
+
+    let hint = Line::from(spans);
     let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
     f.render_widget(p, area);
 }
