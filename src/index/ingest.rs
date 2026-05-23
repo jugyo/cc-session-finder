@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::session::{self, SessionMeta};
+use crate::session::{self, IndexableMessage, SessionMeta};
 
 #[derive(Debug, Default, Clone)]
 pub struct IngestStats {
@@ -100,7 +100,15 @@ pub fn scan_and_update(
                 continue;
             }
         };
+        let messages = match session::extract_indexable_messages_from_file(path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("parse messages {}: {}", path.display(), e);
+                Vec::new()
+            }
+        };
         upsert(conn, &meta)?;
+        replace_messages(conn, &meta.session_id, &messages)?;
         stats.upserted += 1;
         stats.scanned += 1;
     }
@@ -118,6 +126,32 @@ pub fn scan_and_update(
 
     progress.on_done(&stats);
     Ok(stats)
+}
+
+fn replace_messages(
+    conn: &Connection,
+    session_id: &str,
+    messages: &[IndexableMessage],
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?",
+        params![session_id],
+    )?;
+
+    let mut stmt = conn.prepare(
+        "INSERT INTO messages (session_id, turn_index, role, text)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for message in messages {
+        stmt.execute(params![
+            session_id,
+            message.turn_index as i64,
+            message.role,
+            message.text,
+        ])?;
+    }
+
+    Ok(())
 }
 
 fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
@@ -182,4 +216,102 @@ fn list_session_files() -> Result<Vec<PathBuf>> {
         out.push(p);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::schema;
+
+    fn open_indexed_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        schema::ensure(&conn).expect("schema");
+        conn
+    }
+
+    fn insert_session(conn: &Connection, session_id: &str) {
+        conn.execute(
+            "INSERT INTO sessions
+               (session_id, project_dir, cwd, mtime, size, file_path)
+             VALUES (?1, '/p', '/cwd', 0, 0, '/f')",
+            params![session_id],
+        )
+        .expect("insert session");
+    }
+
+    fn fts_count(conn: &Connection, query: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH ?",
+            params![query],
+            |r| r.get(0),
+        )
+        .expect("fts count")
+    }
+
+    #[test]
+    fn replace_messages_removes_stale_messages_and_fts() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1");
+        replace_messages(
+            &conn,
+            "s1",
+            &[IndexableMessage {
+                turn_index: 0,
+                role: "user".to_string(),
+                text: "oldphase text".to_string(),
+            }],
+        )
+        .expect("insert old messages");
+
+        replace_messages(
+            &conn,
+            "s1",
+            &[IndexableMessage {
+                turn_index: 0,
+                role: "assistant".to_string(),
+                text: "newphase text".to_string(),
+            }],
+        )
+        .expect("replace messages");
+
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare("SELECT turn_index, role, text FROM messages WHERE session_id = 's1'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![(0, "assistant".to_string(), "newphase text".to_string())]
+        );
+        assert_eq!(fts_count(&conn, "oldphase"), 0);
+        assert_eq!(fts_count(&conn, "newphase"), 1);
+    }
+
+    #[test]
+    fn deleting_session_removes_messages_and_fts() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1");
+        replace_messages(
+            &conn,
+            "s1",
+            &[IndexableMessage {
+                turn_index: 0,
+                role: "user".to_string(),
+                text: "deletephase text".to_string(),
+            }],
+        )
+        .expect("insert messages");
+
+        conn.execute("DELETE FROM sessions WHERE session_id = 's1'", [])
+            .expect("delete session");
+
+        let count = conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .expect("messages count");
+        assert_eq!(count, 0);
+        assert_eq!(fts_count(&conn, "deletephase"), 0);
+    }
 }
