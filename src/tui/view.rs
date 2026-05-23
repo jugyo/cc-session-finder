@@ -63,7 +63,7 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
-        .map(|hit| render_result_lines(hit, &template_parts, inner.width))
+        .map(|hit| render_result_lines(hit, &template_parts, inner.width, state.explain))
         .collect();
     let item_heights: Vec<usize> = items.iter().map(|lines| item_height(lines)).collect();
     let offset = result_scroll_offset(&item_heights, state.selected, viewport_height);
@@ -98,8 +98,18 @@ fn render_result_lines(
     hit: &Hit,
     template_parts: &[template::Part],
     width: u16,
+    explain: bool,
 ) -> Vec<Line<'static>> {
-    vec![Line::from(template::render(template_parts, hit, width))]
+    let mut lines = vec![Line::from(template::render(template_parts, hit, width))];
+    if explain {
+        if let Some(line) = score_breakdown_line(hit, width) {
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+    lines
 }
 
 fn item_height(lines: &[Line<'static>]) -> usize {
@@ -123,6 +133,27 @@ fn result_scroll_offset(item_heights: &[usize], selected: usize, viewport_height
     offset
 }
 
+fn score_breakdown_line(hit: &Hit, width: u16) -> Option<String> {
+    let scores = &hit.scores;
+    let final_score = scores.final_score?;
+    let keyword = scores.keyword_score?;
+    let cwd = scores.cwd_score?;
+    let recency = scores.recency?;
+    let line = format!(
+        "  score {:.2} = keyword {:.2} + cwd {:.2} + recency {:.2}",
+        final_score, keyword, cwd, recency
+    );
+    Some(fit_width(line, width))
+}
+
+fn fit_width(line: String, width: u16) -> String {
+    let width = usize::from(width);
+    if width == 0 || line.chars().count() <= width {
+        return line;
+    }
+    line.chars().take(width).collect()
+}
+
 fn draw_status_bar(f: &mut Frame, area: Rect, state: &AppState, _tick: usize) {
     let mut spans = vec![
         Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
@@ -144,4 +175,69 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &AppState, _tick: usize) {
     let hint = Line::from(spans);
     let p = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
     f.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::search::Scores;
+
+    fn hit_with_scores(scores: Scores) -> Hit {
+        Hit {
+            session_id: "s1".to_string(),
+            ai_title: Some("title".to_string()),
+            cwd: "/repo".to_string(),
+            mtime: 0,
+            msg_count: Some(1),
+            first_prompt: Some("prompt".to_string()),
+            file_path: "/repo/session.jsonl".to_string(),
+            git_branch: None,
+            pr_number: None,
+            pr_url: None,
+            pr_repo: None,
+            is_worktree: false,
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_create: 0,
+            labels: vec!["match".to_string()],
+            scores,
+        }
+    }
+
+    #[test]
+    fn explain_adds_score_line_when_scores_are_available() {
+        let hit = hit_with_scores(Scores {
+            keyword_score: Some(1.0),
+            cwd_score: Some(2.0),
+            recency: Some(0.5),
+            final_score: Some(3.5),
+            ..Scores::default()
+        });
+
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[1].spans[0].content.as_ref(),
+            "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
+        );
+    }
+
+    #[test]
+    fn explain_omits_score_line_when_scores_are_missing() {
+        let hit = hit_with_scores(Scores::default());
+
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true);
+
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_multiline_selected_item_visible() {
+        let heights = [1, 2, 2, 1];
+
+        assert_eq!(result_scroll_offset(&heights, 2, 4), 1);
+        assert_eq!(result_scroll_offset(&heights, 2, 3), 2);
+    }
 }

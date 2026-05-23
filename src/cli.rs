@@ -166,13 +166,15 @@ fn write_results(
                 },
                 explain: explain.then_some(OutputExplain {
                     requested: true,
-                    details: "ranking explanations are not available yet",
+                    details:
+                        "score breakdown fields are included in results[].scores when available",
                 }),
             };
             serde_json::to_writer_pretty(&mut out, &doc)?;
             writeln!(out)?;
         }
         Format::Tsv => {
+            // Keep TSV and IDs single-record-per-line even with --explain.
             for h in hits {
                 writeln!(
                     out,
