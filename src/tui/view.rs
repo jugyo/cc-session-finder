@@ -212,6 +212,9 @@ mod tests {
             tokens_cache_read: 0,
             tokens_cache_create: 0,
             labels: vec!["match".to_string()],
+            snippet: None,
+            snippet_role: None,
+            snippet_message_count: None,
             scores,
         }
     }

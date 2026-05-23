@@ -27,6 +27,12 @@ pub struct Hit {
     pub tokens_cache_read: u64,
     pub tokens_cache_create: u64,
     pub labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_message_count: Option<u32>,
     pub scores: Scores,
 }
 
@@ -297,6 +303,9 @@ fn message_hits(
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                     bm25(messages_fts) AS rank,
+                    m.role,
+                    m.turn_index,
+                    snippet(messages_fts, 0, '[', ']', ' ... ', 12) AS snippet,
                     CASE
                         WHEN {cwd_boost_param} IS NOT NULL AND s.cwd = {cwd_boost_param} THEN 1.0
                         ELSE 0.0
@@ -316,9 +325,9 @@ fn message_hits(
          SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
                 git_branch, pr_number, pr_url, pr_repo, project_dir,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
-                rank, cwd_boost, cwd_boost * 2.0 AS cwd_score, recency
+                rank, role, snippet, cwd_boost, cwd_boost * 2.0 AS cwd_score, recency
          FROM scored
-         ORDER BY rank ASC, mtime DESC, session_id ASC",
+         ORDER BY rank ASC, mtime DESC, session_id ASC, turn_index ASC",
     );
 
     let mut stmt = conn.prepare(&sql)?;
@@ -330,17 +339,23 @@ fn message_hits(
 
     let mut hits_by_id: HashMap<String, MessageHit> = HashMap::new();
     while let Some(r) = rows.next()? {
-        let hit = map_hit(r)?;
+        let mut hit = map_hit(r)?;
         let bm25_rank = r.get(16).unwrap_or(0.0);
-        let cwd_boost = r.get(17).unwrap_or(0.0);
-        let cwd_score = r.get(18).unwrap_or(0.0);
-        let recency = r.get(19).unwrap_or(0.0);
+        let role: Option<String> = r.get(17).ok();
+        let snippet: Option<String> = r.get(18).ok();
+        let cwd_boost = r.get(19).unwrap_or(0.0);
+        let cwd_score = r.get(20).unwrap_or(0.0);
+        let recency = r.get(21).unwrap_or(0.0);
+        hit.snippet = snippet.clone();
+        hit.snippet_role = role.clone();
         hits_by_id
             .entry(hit.session_id.clone())
             .and_modify(|message_hit| {
                 message_hit.match_count = message_hit.match_count.saturating_add(1);
                 if bm25_rank < message_hit.bm25_rank {
                     message_hit.bm25_rank = bm25_rank;
+                    message_hit.hit.snippet = snippet.clone();
+                    message_hit.hit.snippet_role = role.clone();
                 }
             })
             .or_insert(MessageHit {
@@ -374,6 +389,9 @@ fn apply_message_score(hit: &mut Hit, message_hit: &MessageHit) {
     hit.scores.message_count_bonus = Some(count_bonus);
     hit.scores.text_search = Some(final_score);
     hit.scores.final_score = Some(final_score);
+    hit.snippet = message_hit.hit.snippet.clone();
+    hit.snippet_role = message_hit.hit.snippet_role.clone();
+    hit.snippet_message_count = Some(message_hit.match_count);
 }
 
 /// trigram tokenizer ignores tokens shorter than 3 characters, so we drop them
@@ -436,6 +454,9 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         tokens_cache_read: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
         tokens_cache_create: r.get::<_, i64>(15).unwrap_or(0).max(0) as u64,
         labels: Vec::new(),
+        snippet: None,
+        snippet_role: None,
+        snippet_message_count: None,
         scores: Scores::default(),
     })
 }
@@ -676,6 +697,7 @@ mod tests {
             .find(|h| h.session_id == "s1")
             .expect("matching hit")
             .scores;
+        let hit = hits.iter().find(|h| h.session_id == "s1").unwrap();
 
         let bm25_rank = scores.bm25_rank.expect("bm25 rank");
         let keyword_score = scores.keyword_score.expect("keyword score");
@@ -690,6 +712,9 @@ mod tests {
         assert_near(recency, recency_score(1_700_000_000), 0.0001);
         assert_close(final_score, keyword_score + cwd_score + recency);
         assert_close(scores.text_search.expect("text search score"), final_score);
+        assert!(hit.snippet.is_none());
+        assert!(hit.snippet_role.is_none());
+        assert!(hit.snippet_message_count.is_none());
     }
 
     #[test]
@@ -769,6 +794,19 @@ mod tests {
 
         assert!(scores.bm25_rank.is_none());
         assert!(scores.keyword_score.is_none());
+        assert_eq!(hit.snippet_role.as_deref(), Some("user"));
+        assert_eq!(hit.snippet_message_count, Some(1));
+        assert!(
+            hit.snippet
+                .as_deref()
+                .is_some_and(|snippet| snippet.contains("[bodyonly]")),
+            "{:?}",
+            hit.snippet
+        );
+        let json = serde_json::to_value(hit).unwrap();
+        assert!(json.get("snippet").is_some());
+        assert_eq!(json["snippet_role"], "user");
+        assert_eq!(json["snippet_message_count"], 1);
         assert_eq!(scores.message_match_count, Some(1));
         assert_close(
             scores.message_score.expect("message score"),
@@ -808,6 +846,8 @@ mod tests {
         let scores = &hit.scores;
 
         assert_eq!(scores.message_match_count, Some(2));
+        assert_eq!(hit.snippet_message_count, Some(2));
+        assert!(hit.snippet.is_some());
         assert!(scores.keyword_score.is_some());
         assert_close(
             scores.metadata_score.expect("metadata score"),
@@ -844,6 +884,39 @@ mod tests {
         assert_close(
             scores.message_count_bonus.expect("count bonus"),
             MESSAGE_COUNT_BONUS_CAP,
+        );
+    }
+
+    #[test]
+    fn message_snippet_updates_after_message_replacement() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", None, None);
+        insert_message(&conn, "s1", 0, "user", "oldsnippet token");
+
+        assert_eq!(
+            text_search(&conn, "oldsnippet", None, false, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        conn.execute("DELETE FROM messages WHERE session_id = ?1", params!["s1"])
+            .unwrap();
+        insert_message(&conn, "s1", 0, "assistant", "newsnippet token");
+
+        assert!(text_search(&conn, "oldsnippet", None, false, 10)
+            .unwrap()
+            .is_empty());
+        let hits = text_search(&conn, "newsnippet", None, false, 10).unwrap();
+        let hit = hits.first().expect("hit");
+
+        assert_eq!(hit.snippet_role.as_deref(), Some("assistant"));
+        assert!(
+            hit.snippet
+                .as_deref()
+                .is_some_and(|snippet| snippet.contains("[newsnippet]")),
+            "{:?}",
+            hit.snippet
         );
     }
 
