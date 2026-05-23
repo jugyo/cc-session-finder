@@ -29,6 +29,14 @@ pub struct SessionMeta {
     pub tokens_cache_create: u64,
 }
 
+/// Indexable message text extracted from one JSONL record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexableMessage {
+    pub turn_index: u32,
+    pub role: String,
+    pub text: String,
+}
+
 pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
     let metadata = std::fs::metadata(path)?;
     let mtime = metadata
@@ -168,8 +176,78 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
     })
 }
 
+pub fn extract_indexable_messages_from_file(path: &Path) -> Result<Vec<IndexableMessage>> {
+    let f = File::open(path)?;
+    let reader = BufReader::new(f);
+    let mut messages = Vec::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        let v: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some((role, text)) = indexable_message_text(&v) {
+            messages.push(IndexableMessage {
+                turn_index: messages.len() as u32,
+                role,
+                text,
+            });
+        }
+    }
+
+    Ok(messages)
+}
+
+const _: fn(&Path) -> Result<Vec<IndexableMessage>> = extract_indexable_messages_from_file;
+
 fn usage_u64(usage: &Value, key: &str) -> u64 {
     usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+fn indexable_message_text(v: &Value) -> Option<(String, String)> {
+    let ty = v.get("type").and_then(|t| t.as_str())?;
+    if ty != "user" && ty != "assistant" {
+        return None;
+    }
+
+    let msg = v.get("message")?;
+    let role = msg.get("role").and_then(|r| r.as_str())?;
+    if role != ty {
+        return None;
+    }
+
+    let text = message_text(msg.get("content")?)?;
+    if text.trim().is_empty() {
+        return None;
+    }
+
+    Some((role.to_string(), text))
+}
+
+fn message_text(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+
+    let parts = content.as_array()?;
+    let texts: Vec<&str> = parts
+        .iter()
+        .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n\n"))
+    }
 }
 
 /// Pull the first text-type content from a user message record.
@@ -227,4 +305,116 @@ pub fn build_preview(meta: &SessionMeta) -> String {
         s.push_str(p);
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn message(v: Value) -> Option<(String, String)> {
+        indexable_message_text(&v)
+    }
+
+    #[test]
+    fn extracts_user_string_content() {
+        let out = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "hello from user"
+            }
+        }));
+
+        assert_eq!(
+            out,
+            Some(("user".to_string(), "hello from user".to_string()))
+        );
+    }
+
+    #[test]
+    fn extracts_user_text_parts() {
+        let out = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "image", "source": {}},
+                    {"type": "text", "text": "second"}
+                ]
+            }
+        }));
+
+        assert_eq!(
+            out,
+            Some(("user".to_string(), "first\n\nsecond".to_string()))
+        );
+    }
+
+    #[test]
+    fn extracts_assistant_text_parts() {
+        let out = message(json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hidden"},
+                    {"type": "text", "text": "assistant answer"},
+                    {"type": "tool_use", "name": "Edit"}
+                ]
+            }
+        }));
+
+        assert_eq!(
+            out,
+            Some(("assistant".to_string(), "assistant answer".to_string()))
+        );
+    }
+
+    #[test]
+    fn skips_tool_result_and_thinking_only_messages() {
+        let tool_result = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "content": "command output"}
+                ]
+            }
+        }));
+        let thinking = message(json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hidden"}
+                ]
+            }
+        }));
+
+        assert_eq!(tool_result, None);
+        assert_eq!(thinking, None);
+    }
+
+    #[test]
+    fn skips_non_message_records_and_role_mismatches() {
+        let attachment = message(json!({
+            "type": "attachment",
+            "message": {
+                "role": "user",
+                "content": "attached"
+            }
+        }));
+        let mismatch = message(json!({
+            "type": "user",
+            "message": {
+                "role": "assistant",
+                "content": "wrong role"
+            }
+        }));
+
+        assert_eq!(attachment, None);
+        assert_eq!(mismatch, None);
+    }
 }
