@@ -38,6 +38,9 @@ struct Cli {
     /// Show ranking explanation details when available
     #[arg(long, global = true)]
     explain: bool,
+
+    #[arg(long, global = true, hide = true, default_value_t = 2)]
+    snippet_lines: usize,
 }
 
 #[derive(Debug, Subcommand)]
@@ -137,7 +140,7 @@ fn main() -> ExitCode {
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         None => {
             if atty::is(atty::Stream::Stdout) {
-                tui::run(cli.query, cli.reindex, cli.explain)
+                tui::run(cli.query, cli.reindex, cli.explain, cli.snippet_lines)
             } else {
                 // Non-TTY without subcommand → behave like `list --format json`
                 cli::run_list(

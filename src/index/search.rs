@@ -305,7 +305,7 @@ fn message_hits(
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
-                    snippet(messages_fts, 0, '[', ']', ' ... ', 12) AS snippet,
+                    snippet(messages_fts, 0, '[', ']', ' ... ', 64) AS snippet,
                     CASE
                         WHEN {cwd_boost_param} IS NOT NULL AND s.cwd = {cwd_boost_param} THEN 1.0
                         ELSE 0.0
