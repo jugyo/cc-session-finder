@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
@@ -47,13 +48,35 @@ pub struct Scores {
 }
 
 /// Recency factor in [0, 1] using a log decay on age in days.
-pub fn recency_score(mtime: i64) -> f64 {
-    let now = std::time::SystemTime::now()
+#[cfg(test)]
+fn recency_score(mtime: i64) -> f64 {
+    recency_score_at(mtime, current_unix_secs())
+}
+
+fn current_unix_secs() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn recency_score_at(mtime: i64, now: i64) -> f64 {
     let age_days = ((now - mtime).max(0) as f64) / 86_400.0;
     1.0 / (1.0 + (age_days + 1.0).ln())
+}
+
+fn register_search_functions(conn: &Connection) -> Result<()> {
+    let now = current_unix_secs();
+    conn.create_scalar_function(
+        "ccsf_recency_score",
+        1,
+        FunctionFlags::SQLITE_UTF8,
+        move |ctx| {
+            let mtime = ctx.get::<i64>(0)?;
+            Ok(recency_score_at(mtime, now))
+        },
+    )?;
+    Ok(())
 }
 
 /// Newest sessions, optionally restricted to a cwd.
@@ -110,7 +133,7 @@ pub fn list(
 }
 
 /// FTS5 text search using trigram tokens. The query is matched as a
-/// prefix-allowing phrase. cwd boost and recency are applied client-side.
+/// prefix-allowing phrase.
 pub fn text_search(
     conn: &Connection,
     query: &str,
@@ -124,66 +147,77 @@ pub fn text_search(
         return Ok(vec![]);
     }
 
-    // Column layout must match map_hit (16 cols) followed by bm25 rank.
-    let mut sql =
-        "SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt, s.file_path,
-                s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
-                s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
-                bm25(sessions_fts, 1.5, 3.0, 0.8) AS rank
-         FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
-         WHERE sessions_fts MATCH ?"
-            .to_string();
+    register_search_functions(conn)?;
+
+    let cwd_boost_param = if cwd_only { "?3" } else { "?2" };
+    let limit_param = if cwd_only { "?4" } else { "?3" };
+    let mut sql = "WITH ranked AS (
+             SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
+                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
+                    s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
+                    bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
+             FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
+             WHERE sessions_fts MATCH ?1"
+        .to_string();
     if cwd_only {
-        sql.push_str(" AND s.cwd = ?");
+        sql.push_str(" AND s.cwd = ?2");
     }
-    sql.push_str(" ORDER BY rank LIMIT ?");
+    sql.push_str(&format!(
+        "
+         ),
+         components AS (
+             SELECT ranked.*,
+                    -bm25_rank AS keyword_score,
+                    CASE
+                        WHEN {cwd_boost_param} IS NOT NULL AND cwd = {cwd_boost_param} THEN 1.0
+                        ELSE 0.0
+                    END AS cwd_boost,
+                    ccsf_recency_score(mtime) AS recency
+             FROM ranked
+         ),
+         scored AS (
+             SELECT *,
+                    cwd_boost * 2.0 AS cwd_score,
+                    keyword_score + (cwd_boost * 2.0) + recency AS final_score
+             FROM components
+         )
+         SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
+                git_branch, pr_number, pr_url, pr_repo, project_dir,
+                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                bm25_rank, keyword_score, cwd_boost, cwd_score, recency, final_score
+         FROM scored
+         ORDER BY final_score DESC, bm25_rank ASC, mtime DESC, session_id ASC
+         LIMIT {limit_param}"
+    ));
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let mut hits: Vec<(Hit, f64)> = Vec::new();
+    let mut hits: Vec<Hit> = Vec::new();
     let mut rows = if cwd_only {
-        stmt.query(params![q, cwd_s.as_deref().unwrap_or(""), limit as i64 * 2])?
+        stmt.query(params![
+            q,
+            cwd_s.as_deref().unwrap_or(""),
+            cwd_s.as_deref(),
+            limit as i64
+        ])?
     } else {
-        stmt.query(params![q, limit as i64 * 2])?
+        stmt.query(params![q, cwd_s.as_deref(), limit as i64])?
     };
     while let Some(r) = rows.next()? {
-        let h = map_hit(r)?;
-        let rank: f64 = r.get(16).unwrap_or(0.0);
-        hits.push((h, rank));
+        let mut h = map_hit(r)?;
+        let final_score = r.get(21).unwrap_or(0.0);
+        h.scores.text_search = Some(final_score);
+        h.scores.bm25_rank = Some(r.get(16).unwrap_or(0.0));
+        h.scores.keyword_score = Some(r.get(17).unwrap_or(0.0));
+        h.scores.cwd_boost = Some(r.get(18).unwrap_or(0.0));
+        h.scores.cwd_score = Some(r.get(19).unwrap_or(0.0));
+        h.scores.recency = Some(r.get(20).unwrap_or(0.0));
+        h.scores.final_score = Some(final_score);
+        h.labels.push("match".to_string());
+        hits.push(h);
     }
 
-    // Score = bm25 (lower is better → negate) + cwd boost + recency.
-    let mut scored: Vec<Hit> = hits
-        .into_iter()
-        .map(|(mut h, rank)| {
-            let recency = recency_score(h.mtime);
-            let cwd_boost = match cwd_s.as_deref() {
-                Some(c) if c == h.cwd => 1.0,
-                _ => 0.0,
-            };
-            let keyword_score = -rank;
-            let cwd_score = cwd_boost * 2.0;
-            let composite = keyword_score + cwd_score + recency;
-            h.scores.text_search = Some(composite);
-            h.scores.bm25_rank = Some(rank);
-            h.scores.keyword_score = Some(keyword_score);
-            h.scores.cwd_boost = Some(cwd_boost);
-            h.scores.cwd_score = Some(cwd_score);
-            h.scores.recency = Some(recency);
-            h.scores.final_score = Some(composite);
-            h.labels.push("match".to_string());
-            h
-        })
-        .collect();
-    scored.sort_by(|a, b| {
-        b.scores
-            .text_search
-            .partial_cmp(&a.scores.text_search)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    scored.truncate(limit);
-
-    Ok(annotate(scored, cwd_s.as_deref()))
+    Ok(annotate(hits, cwd_s.as_deref()))
 }
 
 /// trigram tokenizer ignores tokens shorter than 3 characters, so we drop them
@@ -374,6 +408,13 @@ mod tests {
         );
     }
 
+    fn assert_near(actual: f64, expected: f64, tolerance: f64) {
+        assert!(
+            (actual - expected).abs() < tolerance,
+            "actual {actual} != expected {expected} within {tolerance}"
+        );
+    }
+
     #[test]
     fn schema_fts_columns_are_split_metadata() {
         let conn = open_indexed_db();
@@ -475,8 +516,74 @@ mod tests {
         assert_close(keyword_score, -bm25_rank);
         assert_close(cwd_boost, 1.0);
         assert_close(cwd_score, cwd_boost * 2.0);
+        assert_near(recency, recency_score(1_700_000_000), 0.0001);
         assert_close(final_score, keyword_score + cwd_score + recency);
         assert_close(scores.text_search.expect("text search score"), final_score);
+    }
+
+    #[test]
+    fn text_search_without_cwd_has_zero_cwd_score() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", None, Some("phaseone ranking"));
+
+        let hits = text_search(&conn, "phaseone", None, false, 10).unwrap();
+        let scores = &hits.first().expect("matching hit").scores;
+
+        assert_close(scores.cwd_boost.expect("cwd boost"), 0.0);
+        assert_close(scores.cwd_score.expect("cwd score"), 0.0);
+    }
+
+    #[test]
+    fn text_search_sql_ordering_is_not_cut_by_bm25_window() {
+        let conn = open_indexed_db();
+        for i in 0..5 {
+            insert_session_at(
+                &conn,
+                &format!("bm25-{i}"),
+                "/repo/other",
+                None,
+                Some("phaseboost"),
+                1_700_000_000,
+            );
+        }
+        insert_session_at(
+            &conn,
+            "cwd-boosted",
+            "/repo/current",
+            Some("phaseboost"),
+            None,
+            1_700_000_000,
+        );
+
+        let bm25_window: Vec<String> = conn
+            .prepare(
+                "SELECT s.session_id
+                 FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
+                 WHERE sessions_fts MATCH ?1
+                 ORDER BY bm25(sessions_fts, 1.5, 3.0, 0.8)
+                 LIMIT 2",
+            )
+            .unwrap()
+            .query_map(params![build_fts_query("phaseboost")], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!bm25_window.iter().any(|id| id == "cwd-boosted"));
+
+        let hits = text_search(
+            &conn,
+            "phaseboost",
+            Some(Path::new("/repo/current")),
+            false,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            hits.first().map(|h| h.session_id.as_str()),
+            Some("cwd-boosted")
+        );
+        assert_close(hits[0].scores.cwd_boost.expect("cwd boost"), 1.0);
     }
 
     #[test]
