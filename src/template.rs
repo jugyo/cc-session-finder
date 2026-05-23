@@ -9,6 +9,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::index::search::Hit;
 
+const TRIGRAM_MIN_LEN: usize = 3;
+
 /// A renderable piece. Each variant produces one or more [`Span`]s.
 #[derive(Debug, Clone)]
 pub enum Part {
@@ -52,18 +54,18 @@ pub enum Field {
 
 /// Render a row by walking `parts`, with `total_width` reserved for any
 /// [`Part::Flex`] field.
-pub fn render(parts: &[Part], hit: &Hit, total_width: u16) -> Vec<Span<'static>> {
+pub fn render(parts: &[Part], hit: &Hit, total_width: u16, terms: &[String]) -> Vec<Span<'static>> {
     // First pass: render non-flex parts to find consumed width.
     let mut consumed: u16 = 0;
     let mut sketch: Vec<SpanOrFlex> = Vec::new();
     for p in parts {
-        emit(p, hit, &mut sketch, &mut consumed);
+        emit(p, hit, &mut sketch, &mut consumed, terms);
     }
 
     // Second pass: compute remaining for Flex fields and finalize spans.
     let flex_count = sketch
         .iter()
-        .filter(|x| matches!(x, SpanOrFlex::Flex(_, _)))
+        .filter(|x| matches!(x, SpanOrFlex::Flex(..)))
         .count();
     let remaining = total_width.saturating_sub(consumed);
     let per_flex = if flex_count > 0 {
@@ -76,9 +78,13 @@ pub fn render(parts: &[Part], hit: &Hit, total_width: u16) -> Vec<Span<'static>>
     for item in sketch {
         match item {
             SpanOrFlex::Span(s) => out.push(s),
-            SpanOrFlex::Flex(text, style) => {
+            SpanOrFlex::Flex(text, style, highlight) => {
                 let trimmed = truncate_to_width(&text, per_flex);
-                out.push(Span::styled(trimmed, style));
+                if highlight {
+                    out.extend(split_with_highlight(&trimmed, style, terms));
+                } else {
+                    out.push(Span::styled(trimmed, style));
+                }
             }
         }
     }
@@ -87,10 +93,10 @@ pub fn render(parts: &[Part], hit: &Hit, total_width: u16) -> Vec<Span<'static>>
 
 enum SpanOrFlex {
     Span(Span<'static>),
-    Flex(String, Style),
+    Flex(String, Style, bool),
 }
 
-fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16) {
+fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16, terms: &[String]) {
     match part {
         Part::Literal(s, style) => {
             *consumed = consumed.saturating_add(UnicodeWidthStr::width(*s) as u16);
@@ -107,7 +113,15 @@ fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16) {
                 None => raw,
             };
             *consumed = consumed.saturating_add(UnicodeWidthStr::width(trimmed.as_str()) as u16);
-            out.push(SpanOrFlex::Span(Span::styled(trimmed, *style)));
+            if is_highlighted_field(*field) {
+                out.extend(
+                    split_with_highlight(&trimmed, *style, terms)
+                        .into_iter()
+                        .map(SpanOrFlex::Span),
+                );
+            } else {
+                out.push(SpanOrFlex::Span(Span::styled(trimmed, *style)));
+            }
         }
         Part::Labels => {
             for lab in &hit.labels {
@@ -125,15 +139,19 @@ fn emit(part: &Part, hit: &Hit, out: &mut Vec<SpanOrFlex>, consumed: &mut u16) {
                 .unwrap_or(false)
             {
                 for p in inner {
-                    emit(p, hit, out, consumed);
+                    emit(p, hit, out, consumed, terms);
                 }
             }
         }
         Part::Flex { field, style } => {
             let raw = render_field(*field, hit).unwrap_or_default();
-            out.push(SpanOrFlex::Flex(raw, *style));
+            out.push(SpanOrFlex::Flex(raw, *style, is_highlighted_field(*field)));
         }
     }
+}
+
+fn is_highlighted_field(field: Field) -> bool {
+    matches!(field, Field::Title | Field::PromptOneLine)
 }
 
 fn render_field(field: Field, hit: &Hit) -> Option<String> {
@@ -198,6 +216,118 @@ fn label_style(label: &str) -> (String, Color) {
         "recent" => ("[recent]".to_string(), Color::DarkGray),
         other => (format!("[{}]", other), Color::Gray),
     }
+}
+
+pub fn highlight_terms(query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for (raw_index, raw) in query.split_whitespace().enumerate() {
+        push_highlight_term(raw, raw_index > 0, &mut terms);
+
+        let mut part = String::new();
+        let mut part_index = 0usize;
+        for ch in raw.chars() {
+            if ch.is_alphanumeric() {
+                part.push(ch);
+            } else {
+                push_highlight_term(&part, raw_index > 0 || part_index > 0, &mut terms);
+                part.clear();
+                part_index += 1;
+            }
+        }
+        push_highlight_term(&part, raw_index > 0 || part_index > 0, &mut terms);
+    }
+    terms
+}
+
+fn push_highlight_term(term: &str, allow_short: bool, terms: &mut Vec<String>) {
+    let trimmed = term.trim_matches(|ch: char| !ch.is_alphanumeric());
+    if !is_highlightable_term(trimmed, allow_short) {
+        return;
+    }
+    let term = trimmed.to_lowercase();
+    if !terms.iter().any(|existing| existing == &term) {
+        terms.push(term);
+    }
+}
+
+fn is_highlightable_term(term: &str, allow_short: bool) -> bool {
+    let char_count = term.chars().count();
+    char_count >= TRIGRAM_MIN_LEN
+        || (allow_short
+            && char_count >= 2
+            && term.chars().all(|ch| ch.is_ascii_alphabetic())
+            && is_short_acronym(term))
+}
+
+fn is_short_acronym(term: &str) -> bool {
+    matches!(
+        term.to_ascii_lowercase().as_str(),
+        "ai" | "ui" | "ux" | "ml" | "db" | "id" | "pr" | "ci" | "cd"
+    )
+}
+
+pub fn split_with_highlight(text: &str, base: Style, terms: &[String]) -> Vec<Span<'static>> {
+    if text.is_empty() || terms.is_empty() {
+        return vec![Span::styled(text.to_string(), base)];
+    }
+
+    let lower = text.to_lowercase();
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    for (start, end) in highlight_ranges(&lower, text, terms) {
+        if start > pos {
+            spans.push(Span::styled(text[pos..start].to_string(), base));
+        }
+        spans.push(Span::styled(
+            text[start..end].to_string(),
+            highlight_style(base),
+        ));
+        pos = end;
+    }
+
+    if pos < text.len() {
+        spans.push(Span::styled(text[pos..].to_string(), base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base));
+    }
+    spans
+}
+
+fn highlight_ranges(
+    lower_text: &str,
+    original_text: &str,
+    terms: &[String],
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for term in terms {
+        if term.is_empty() {
+            continue;
+        }
+        for (start, _) in lower_text.match_indices(term) {
+            let end = start + term.len();
+            if !original_text.is_char_boundary(start) || !original_text.is_char_boundary(end) {
+                continue;
+            }
+            ranges.push((start, end));
+        }
+    }
+    ranges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+
+    let mut selected = Vec::new();
+    let mut pos = 0usize;
+    for (start, end) in ranges {
+        if start < pos {
+            continue;
+        }
+        selected.push((start, end));
+        pos = end;
+    }
+    selected
+}
+
+fn highlight_style(base: Style) -> Style {
+    base.fg(Color::Yellow).add_modifier(Modifier::BOLD)
 }
 
 fn short_project(cwd: &str) -> String {
@@ -320,4 +450,179 @@ pub fn default_row_template() -> Vec<Part> {
             ],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit() -> Hit {
+        Hit {
+            session_id: "s1".to_string(),
+            ai_title: Some("Phase Search Title".to_string()),
+            cwd: "/repo/project".to_string(),
+            mtime: 0,
+            msg_count: Some(1),
+            first_prompt: Some("Prompt has Search term".to_string()),
+            file_path: "/repo/session.jsonl".to_string(),
+            git_branch: None,
+            pr_number: None,
+            pr_url: None,
+            pr_repo: None,
+            is_worktree: false,
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_create: 0,
+            labels: vec!["match".to_string()],
+            snippet: None,
+            snippet_role: None,
+            snippet_message_count: None,
+            scores: crate::index::search::Scores::default(),
+        }
+    }
+
+    #[test]
+    fn highlight_terms_filters_short_tokens_and_lowercases() {
+        assert_eq!(
+            highlight_terms("ab Search SEARCH"),
+            vec!["search".to_string()]
+        );
+        assert!(highlight_terms("  a  bc  ").is_empty());
+    }
+
+    #[test]
+    fn highlight_terms_keeps_short_acronyms() {
+        assert_eq!(
+            highlight_terms("Recall AI ai UX ux A1 a1 12 to bc"),
+            vec!["recall".to_string(), "ai".to_string(), "ux".to_string()]
+        );
+    }
+
+    #[test]
+    fn highlight_terms_splits_punctuation_inside_tokens() {
+        assert_eq!(
+            highlight_terms("cc-session-finder foo,bar"),
+            vec![
+                "cc-session-finder".to_string(),
+                "session".to_string(),
+                "finder".to_string(),
+                "foo,bar".to_string(),
+                "foo".to_string(),
+                "bar".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn split_highlight_returns_single_span_without_match() {
+        let spans = split_with_highlight("plain text", Style::default(), &["needle".to_string()]);
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "plain text");
+    }
+
+    #[test]
+    fn split_highlight_matches_case_insensitively() {
+        let spans = split_with_highlight("Find Search", Style::default(), &["search".to_string()]);
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].content.as_ref(), "Search");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn split_highlight_splits_multiple_matches() {
+        let spans = split_with_highlight("one two one", Style::default(), &["one".to_string()]);
+        let contents: Vec<_> = spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(contents, ["one", " two ", "one"]);
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn split_highlight_splits_multiple_terms() {
+        let spans = split_with_highlight(
+            "alpha then beta",
+            Style::default(),
+            &["alpha".to_string(), "beta".to_string()],
+        );
+        let highlighted: Vec<_> = spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(highlighted, ["alpha", "beta"]);
+    }
+
+    #[test]
+    fn split_highlight_matches_short_acronym_after_punctuation() {
+        let terms = highlight_terms("Recall AI");
+        let spans = split_with_highlight("Recall.AI", Style::default(), &terms);
+        let highlighted: Vec<_> = spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(highlighted, ["Recall", "AI"]);
+    }
+
+    #[test]
+    fn split_highlight_matches_short_terms_case_insensitively() {
+        let terms = highlight_terms("recall ai");
+        let spans = split_with_highlight("Recall.AI", Style::default(), &terms);
+        let highlighted: Vec<_> = spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(highlighted, ["Recall", "AI"]);
+    }
+
+    #[test]
+    fn split_highlight_prefers_earliest_overlap() {
+        let spans = split_with_highlight(
+            "abcdef",
+            Style::default(),
+            &["abc".to_string(), "bcd".to_string()],
+        );
+        let contents: Vec<_> = spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(contents, ["abc", "def"]);
+    }
+
+    #[test]
+    fn split_highlight_does_not_panic_on_non_ascii() {
+        let spans =
+            split_with_highlight("日本語 Search", Style::default(), &["search".to_string()]);
+
+        assert!(spans.iter().any(|span| span.content.as_ref() == "Search"));
+    }
+
+    #[test]
+    fn render_highlights_title_and_prompt() {
+        let parts = vec![
+            Part::Field {
+                field: Field::Title,
+                style: Style::default(),
+                max_width: None,
+            },
+            Part::Literal(" ", Style::default()),
+            Part::Flex {
+                field: Field::PromptOneLine,
+                style: Style::default(),
+            },
+        ];
+
+        let spans = render(&parts, &hit(), 80, &["search".to_string()]);
+
+        assert!(spans
+            .iter()
+            .filter(|span| span.content.eq_ignore_ascii_case("search"))
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+    }
 }

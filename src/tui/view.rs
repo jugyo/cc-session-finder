@@ -62,6 +62,7 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     }
 
     let template_parts = template::default_row_template();
+    let highlight_terms = template::highlight_terms(state.editor.query());
     let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
@@ -72,6 +73,7 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
                 inner.width,
                 state.explain,
                 state.snippet_lines,
+                &highlight_terms,
             )
         })
         .collect();
@@ -110,13 +112,16 @@ fn render_result_lines(
     width: u16,
     explain: bool,
     snippet_lines: usize,
+    highlight_terms: &[String],
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(template::render(template_parts, hit, width))];
-    for line in snippet_lines_for_hit(hit, width, snippet_lines) {
-        lines.push(Line::from(Span::styled(
-            line,
-            Style::default().fg(Color::Gray),
-        )));
+    let mut lines = vec![Line::from(template::render(
+        template_parts,
+        hit,
+        width,
+        highlight_terms,
+    ))];
+    for line in snippet_lines_for_hit(hit, width, snippet_lines, highlight_terms) {
+        lines.push(line);
     }
     if explain {
         if let Some(line) = score_breakdown_line(hit, width) {
@@ -133,7 +138,12 @@ fn item_height(lines: &[Line<'static>]) -> usize {
     lines.len().max(1)
 }
 
-fn snippet_lines_for_hit(hit: &Hit, width: u16, max_lines: usize) -> Vec<String> {
+fn snippet_lines_for_hit(
+    hit: &Hit,
+    width: u16,
+    max_lines: usize,
+    highlight_terms: &[String],
+) -> Vec<Line<'static>> {
     if max_lines == 0 {
         return Vec::new();
     }
@@ -145,9 +155,21 @@ fn snippet_lines_for_hit(hit: &Hit, width: u16, max_lines: usize) -> Vec<String>
         return Vec::new();
     }
 
-    let mut lines = wrap_snippet(&one_line(snippet), width, max_lines);
+    let mut lines: Vec<Line<'static>> = wrap_snippet(&one_line(snippet), width, max_lines)
+        .into_iter()
+        .map(|line| {
+            Line::from(template::split_with_highlight(
+                &line,
+                Style::default().fg(Color::Gray),
+                highlight_terms,
+            ))
+        })
+        .collect();
     while lines.len() < max_lines {
-        lines.push("  ".to_string());
+        lines.push(Line::from(Span::styled(
+            "  ".to_string(),
+            Style::default().fg(Color::Gray),
+        )));
     }
     lines
 }
@@ -327,7 +349,7 @@ mod tests {
     fn snippet_adds_two_lines_when_available() {
         let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2, &[]);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(
@@ -341,7 +363,7 @@ mod tests {
     fn snippet_wraps_to_two_lines_by_default() {
         let hit = hit_with_snippet(Some("one two three four five six seven"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 2, &[]);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1].spans[0].content.as_ref(), "  one two three");
@@ -352,7 +374,7 @@ mod tests {
     fn snippet_line_count_is_configurable() {
         let hit = hit_with_snippet(Some("one two three four five six seven"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 3);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 18, false, 3, &[]);
 
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[3].spans[0].content.as_ref(), "  seven");
@@ -363,7 +385,8 @@ mod tests {
         let snippet = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen";
         let hit = hit_with_snippet(Some(snippet), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 200, false, 2);
+        let lines =
+            render_result_lines(&hit, &template::default_row_template(), 200, false, 2, &[]);
 
         assert_eq!(lines.len(), 3);
         assert!(lines[1].spans[0].content.chars().count() <= SNIPPET_LINE_WIDTH + 2);
@@ -374,16 +397,40 @@ mod tests {
     fn snippet_lines_zero_hides_snippet() {
         let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 0);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 0, &[]);
 
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn snippet_highlights_query_terms() {
+        let hit = hit_with_snippet(Some("before Alpha then Beta after"), Some("user"));
+        let terms = template::highlight_terms("alpha beta");
+
+        let lines = render_result_lines(
+            &hit,
+            &template::default_row_template(),
+            80,
+            false,
+            2,
+            &terms,
+        );
+
+        assert_eq!(lines.len(), 3);
+        let highlighted: Vec<_> = lines[1]
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(highlighted, ["Alpha", "Beta"]);
     }
 
     #[test]
     fn snippet_is_omitted_when_missing() {
         let hit = hit_with_snippet(None, None);
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, false, 2, &[]);
 
         assert_eq!(lines.len(), 1);
     }
@@ -399,7 +446,7 @@ mod tests {
             ..Scores::default()
         };
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
 
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[1].spans[0].content.as_ref(), "  body [needle] text");
@@ -414,7 +461,7 @@ mod tests {
     fn snippet_line_is_clipped_to_width() {
         let hit = hit_with_snippet(Some("1234567890"), Some("user"));
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 12, false, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 12, false, 2, &[]);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1].spans[0].content.as_ref(), "  1234567890");
@@ -431,7 +478,7 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
 
         assert_eq!(lines.len(), 2);
         assert_eq!(
@@ -451,7 +498,7 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
 
         assert_eq!(lines.len(), 2);
         assert_eq!(
@@ -464,7 +511,7 @@ mod tests {
     fn explain_omits_score_line_when_scores_are_missing() {
         let hit = hit_with_scores(Scores::default());
 
-        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2);
+        let lines = render_result_lines(&hit, &template::default_row_template(), 80, true, 2, &[]);
 
         assert_eq!(lines.len(), 1);
     }
