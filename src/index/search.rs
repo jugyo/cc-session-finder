@@ -30,8 +30,20 @@ pub struct Hit {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Scores {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text_search: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bm25_rank: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyword_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd_boost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recency: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_score: Option<f64>,
 }
 
 /// Recency factor in [0, 1] using a log decay on age in days.
@@ -149,9 +161,16 @@ pub fn text_search(
                 Some(c) if c == h.cwd => 1.0,
                 _ => 0.0,
             };
-            let composite = -rank + cwd_boost * 2.0 + recency * 1.0;
+            let keyword_score = -rank;
+            let cwd_score = cwd_boost * 2.0;
+            let composite = keyword_score + cwd_score + recency;
             h.scores.text_search = Some(composite);
+            h.scores.bm25_rank = Some(rank);
+            h.scores.keyword_score = Some(keyword_score);
+            h.scores.cwd_boost = Some(cwd_boost);
+            h.scores.cwd_score = Some(cwd_score);
             h.scores.recency = Some(recency);
+            h.scores.final_score = Some(composite);
             h.labels.push("match".to_string());
             h
         })
@@ -323,6 +342,17 @@ mod tests {
         ai_title: Option<&str>,
         first_prompt: Option<&str>,
     ) {
+        insert_session_at(conn, id, cwd, ai_title, first_prompt, 0);
+    }
+
+    fn insert_session_at(
+        conn: &Connection,
+        id: &str,
+        cwd: &str,
+        ai_title: Option<&str>,
+        first_prompt: Option<&str>,
+        mtime: i64,
+    ) {
         let preview = [ai_title, first_prompt]
             .into_iter()
             .flatten()
@@ -331,10 +361,17 @@ mod tests {
         conn.execute(
             "INSERT INTO sessions
                (session_id, project_dir, cwd, ai_title, first_prompt, preview, mtime, size, file_path)
-             VALUES (?1, '/p', ?2, ?3, ?4, ?5, 0, 0, '/f')",
-            params![id, cwd, ai_title, first_prompt, preview],
+             VALUES (?1, '/p', ?2, ?3, ?4, ?5, ?6, 0, '/f')",
+            params![id, cwd, ai_title, first_prompt, preview, mtime],
         )
         .expect("insert");
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual {actual} != expected {expected}"
+        );
     }
 
     #[test]
@@ -400,5 +437,52 @@ mod tests {
         let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
 
         assert_eq!(ids.first(), Some(&"prompt"));
+    }
+
+    #[test]
+    fn text_search_stores_score_breakdown() {
+        let conn = open_indexed_db();
+        insert_session_at(
+            &conn,
+            "s1",
+            "/repo/current",
+            None,
+            Some("phaseone ranking"),
+            1_700_000_000,
+        );
+
+        let hits = text_search(
+            &conn,
+            "phaseone",
+            Some(Path::new("/repo/current")),
+            false,
+            10,
+        )
+        .unwrap();
+        let scores = &hits
+            .iter()
+            .find(|h| h.session_id == "s1")
+            .expect("matching hit")
+            .scores;
+
+        let bm25_rank = scores.bm25_rank.expect("bm25 rank");
+        let keyword_score = scores.keyword_score.expect("keyword score");
+        let cwd_boost = scores.cwd_boost.expect("cwd boost");
+        let cwd_score = scores.cwd_score.expect("cwd score");
+        let recency = scores.recency.expect("recency score");
+        let final_score = scores.final_score.expect("final score");
+
+        assert_close(keyword_score, -bm25_rank);
+        assert_close(cwd_boost, 1.0);
+        assert_close(cwd_score, cwd_boost * 2.0);
+        assert_close(final_score, keyword_score + cwd_score + recency);
+        assert_close(scores.text_search.expect("text search score"), final_score);
+    }
+
+    #[test]
+    fn empty_score_breakdown_fields_are_omitted_from_json() {
+        let scores = serde_json::to_value(Scores::default()).unwrap();
+
+        assert_eq!(scores, serde_json::json!({}));
     }
 }
