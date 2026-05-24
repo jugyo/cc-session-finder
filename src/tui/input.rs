@@ -31,13 +31,6 @@ impl QueryEditor {
         &self.cache
     }
 
-    pub fn set_query(&mut self, s: String) {
-        self.graphemes = s.graphemes(true).map(|g| g.to_string()).collect();
-        self.cursor = self.graphemes.len();
-        self.dirty = true;
-        self.refresh_cache();
-    }
-
     pub fn insert(&mut self, c: char) {
         self.graphemes.insert(self.cursor, c.to_string());
         self.cursor += 1;

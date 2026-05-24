@@ -134,18 +134,7 @@ fn run_loop(
             }
         }
 
-        // Debounce query updates: re-run search if no input for 30ms.
-        if let Some(q) = pending_query.clone() {
-            if state
-                .last_query_at
-                .map(|t| t.elapsed() >= Duration::from_millis(30))
-                .unwrap_or(true)
-            {
-                pending_query = None;
-                state.editor.set_query(q);
-                refresh_results(&conn, &mut state)?;
-            }
-        }
+        refresh_pending_query_if_ready(&conn, &mut state, &mut pending_query)?;
     }
 }
 
@@ -294,4 +283,49 @@ fn refresh_results(conn: &rusqlite::Connection, state: &mut AppState) -> Result<
     };
     state.selected = 0;
     Ok(())
+}
+
+fn refresh_pending_query_if_ready(
+    conn: &rusqlite::Connection,
+    state: &mut AppState,
+    pending_query: &mut Option<String>,
+) -> Result<()> {
+    if pending_query.is_some()
+        && state
+            .last_query_at
+            .map(|t| t.elapsed() >= Duration::from_millis(30))
+            .unwrap_or(true)
+    {
+        *pending_query = None;
+        refresh_results(conn, state)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_indexed_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::index::schema::ensure(&conn).expect("schema");
+        conn
+    }
+
+    #[test]
+    fn debounced_search_preserves_query_cursor() {
+        let conn = open_indexed_db();
+        let mut state = AppState::new(Some("abcd".to_string()), false);
+        state.editor.move_left();
+        state.editor.move_left();
+        let cursor_col = state.editor.cursor_col();
+        let mut pending_query = Some(state.editor.query().to_string());
+        state.last_query_at = Some(Instant::now() - Duration::from_millis(31));
+
+        refresh_pending_query_if_ready(&conn, &mut state, &mut pending_query).unwrap();
+
+        assert_eq!(pending_query, None);
+        assert_eq!(state.editor.query(), "abcd");
+        assert_eq!(state.editor.cursor_col(), cursor_col);
+    }
 }
