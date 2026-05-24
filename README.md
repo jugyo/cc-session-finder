@@ -60,7 +60,7 @@ cc-session-finder graphql
 
 | Key | Action |
 | -- | -- |
-| Any character | Append to query (IME / multi-byte safe) |
+| Text input / editing keys | Edit query at the cursor (IME / multi-byte safe) |
 | `↑` / `↓` or `Ctrl-P` / `Ctrl-N` | Move selection |
 | `Enter` | `chdir` to the session's `cwd` and exec `claude --resume` |
 | `Esc` / `Ctrl-C` | Cancel and exit |
@@ -118,6 +118,11 @@ cc-session-finder index --reindex --progress-json
 | `130` | `SIGINT` interrupt |
 
 ### Index management
+
+TUI startup and `search` / `list` run an incremental index update before
+reading results. If that update fails, they warn on stderr and continue with the
+existing index when possible. Use `--no-update` with `search` or `list` to skip
+the automatic update.
 
 | Option | Effect |
 | -- | -- |
