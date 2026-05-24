@@ -44,7 +44,11 @@ fn maybe_update(reindex: bool, no_update: bool) -> Result<rusqlite::Connection> 
     if no_update && !reindex {
         return Ok(conn);
     }
-    let _ = index::ingest::scan_and_update(&mut conn, reindex, &index::ingest::NoopProgress);
+    if let Err(err) =
+        index::ingest::scan_and_update(&mut conn, reindex, &index::ingest::NoopProgress)
+    {
+        eprintln!("warning: index update failed; using existing index: {err:#}");
+    }
     Ok(conn)
 }
 
@@ -121,7 +125,7 @@ pub fn run_index(args: IndexArgs, reindex_top: bool) -> Result<ExitCode> {
     if !args.quiet && !args.progress_json {
         eprintln!(
             "indexed {} files (upserted {}, deleted {}, total {})",
-            stats.scanned, stats.upserted, stats.deleted, stats.total
+            stats.indexed, stats.upserted, stats.deleted, stats.total
         );
     }
     Ok(ExitCode::SUCCESS)

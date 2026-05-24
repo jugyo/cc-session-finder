@@ -10,7 +10,7 @@ use crate::session::{self, IndexableMessage, SessionMeta};
 
 #[derive(Debug, Default, Clone)]
 pub struct IngestStats {
-    pub scanned: u32,
+    pub indexed: u32,
     pub upserted: u32,
     pub deleted: u32,
     pub total: u32,
@@ -110,7 +110,7 @@ pub fn scan_and_update(
         upsert(conn, &meta)?;
         replace_messages(conn, &meta.session_id, &messages)?;
         stats.upserted += 1;
-        stats.scanned += 1;
+        stats.indexed += 1;
     }
 
     // 3. Delete vanished sessions

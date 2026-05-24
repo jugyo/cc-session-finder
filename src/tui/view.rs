@@ -374,7 +374,7 @@ fn truncate_to_width(s: &str, max_cols: u16) -> String {
         return s.to_string();
     }
     if max_cols == 1 {
-        return "...".to_string();
+        return "…".to_string();
     }
     let budget = max_cols - 1;
     let mut out = String::new();
@@ -750,6 +750,16 @@ mod tests {
 
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[1].spans[0].content.as_ref(), "1234567890");
+    }
+
+    #[test]
+    fn truncate_to_width_respects_tiny_widths() {
+        assert_eq!(truncate_to_width("abcdef", 0), "");
+        assert_eq!(truncate_to_width("abcdef", 1), "…");
+        assert_eq!(
+            UnicodeWidthStr::width(truncate_to_width("abcdef", 1).as_str()),
+            1
+        );
     }
 
     #[test]

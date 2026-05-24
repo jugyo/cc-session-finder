@@ -394,62 +394,56 @@ Suggested cleanup:
 
 ## Rust Quality Notes
 
-### `scan_and_update` stats naming
+### `scan_and_update` stats naming (resolved)
 
 Observation:
 
-- `IngestStats.scanned` increments only for stale/upserted files, not every file
+- `IngestStats.indexed` increments only for stale/upserted files, not every file
   encountered.
-- `run_index` prints `indexed {} files` using `stats.scanned`.
+- The previous `scanned` name made that look like a full walk count.
 
-Risk:
+Cleanup action:
 
-- Mostly naming/reporting confusion.
+- Renamed `scanned` to `indexed` to match the current CLI wording and the
+  actual successful-index count.
 
-Suggested cleanup:
-
-- Rename to `parsed`/`changed`, or add a separate `visited` count in a small
-  behavior-preserving task.
-
-### Ingest errors are swallowed in non-index commands
+### Ingest errors are swallowed in non-index commands (resolved)
 
 Observation:
 
-- `cli::maybe_update` ignores `scan_and_update` errors.
-- TUI indexing worker also logs and proceeds to `Done`.
+- `cli::maybe_update` previously ignored `scan_and_update` errors.
+- TUI indexing worker also logged and proceeded to `Done`.
 
 Risk:
 
 - Search may silently use stale DB data after an indexing failure.
 - This may be intentional resilience, so it is not a cleanup deletion.
 
-Suggested cleanup:
+Cleanup action:
 
-- Decide desired CLI/TUI failure semantics before changing it.
+- `index` command still fails on ingest errors.
+- Non-index CLI commands and TUI startup now warn on stderr, then continue with
+  the existing index when possible.
 
-### `truncate_to_width` edge case
+### `truncate_to_width` edge case (resolved)
 
 Observation:
 
-- `truncate_to_width(..., 1)` returns `"..."`, which is wider than one column.
+- `truncate_to_width(..., 1)` returned `"..."`, which is wider than one column.
 
 Risk:
 
 - Only affects very narrow terminal areas.
 
-Suggested cleanup:
+Cleanup action:
 
-- Add a focused unit test before changing display behavior.
+- It now returns a single ellipsis character and has a focused unit test.
 
 ## Larger Follow-Up Tasks
 
 1. Docs archive pass: mark completed phase docs historical or move them under
    `.docs/archive/`.
-2. Ranking/explain schema: characterize the public JSON fields emitted by
-   `search --explain` before removing or renaming score fields.
-3. Ingest stats naming: clarify whether `scanned` means visited, parsed, or
-   changed.
-4. Indexing failure semantics: decide whether non-index commands should surface
-   ingest failures or keep silently using the stale DB.
-5. TUI width edge case: add a focused test before changing
-   `truncate_to_width(..., 1)`.
+2. Consider whether index progress should report both total visited files and
+   successful indexed files.
+3. Decide whether TUI should surface index update warnings inside the status bar
+   after startup, not only on stderr.

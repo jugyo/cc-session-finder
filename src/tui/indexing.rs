@@ -20,6 +20,7 @@ enum Phase {
     Starting,
     Scanning { done: u32, total: u32 },
     Done,
+    Failed(String),
 }
 
 struct ChanProgress(mpsc::Sender<Phase>);
@@ -43,24 +44,33 @@ pub fn run(reindex: bool) -> Result<()> {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("indexer open failed: {e}");
-                let _ = tx.send(Phase::Done);
+                let _ = tx.send(Phase::Failed(format!("index open failed: {e:#}")));
                 return;
             }
         };
         let progress = ChanProgress(tx.clone());
-        let _ = index::ingest::scan_and_update(&mut worker_conn, reindex, &progress);
+        if let Err(err) = index::ingest::scan_and_update(&mut worker_conn, reindex, &progress) {
+            tracing::warn!("index update failed: {err}");
+            let _ = tx.send(Phase::Failed(format!("{err:#}")));
+            return;
+        }
         let _ = tx.send(Phase::Done);
     });
 
     let mut current = Phase::Starting;
     let mut tick: usize = 0;
     let mut prev_width: usize = 0;
+    let mut warning = None;
     let is_tty = atty::is(atty::Stream::Stderr);
     let mut err = io::stderr();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(80)) {
             Ok(Phase::Done) => break,
+            Ok(Phase::Failed(message)) => {
+                warning = Some(message);
+                break;
+            }
             Ok(p) => current = p,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 tick = tick.wrapping_add(1);
@@ -79,6 +89,9 @@ pub fn run(reindex: bool) -> Result<()> {
         let _ = write!(err, "\r{:1$}\r", "", prev_width);
         let _ = err.flush();
     }
+    if let Some(message) = warning {
+        eprintln!("warning: index update failed; using existing index: {message}");
+    }
     Ok(())
 }
 
@@ -88,5 +101,6 @@ fn render(p: &Phase, tick: usize) -> String {
         Phase::Starting => format!("{} starting…", spinner),
         Phase::Scanning { done, total } => format!("{} indexing {}/{}", spinner, done, total),
         Phase::Done => String::new(),
+        Phase::Failed(_) => String::new(),
     }
 }
