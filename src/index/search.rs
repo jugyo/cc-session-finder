@@ -45,10 +45,6 @@ pub struct Scores {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyword_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd_boost: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd_score: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub recency: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub freshness_boost: Option<f64>,
@@ -224,11 +220,14 @@ pub fn text_search(
 
     let mut hits: Vec<Hit> = hits_by_id.into_values().collect();
     hits.sort_by(|a, b| {
-        b.scores
-            .final_score
-            .partial_cmp(&a.scores.final_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.mtime.cmp(&a.mtime))
+        b.mtime
+            .cmp(&a.mtime)
+            .then_with(|| {
+                b.scores
+                    .relevance_score
+                    .partial_cmp(&a.scores.relevance_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
     hits.truncate(limit);
@@ -274,7 +273,7 @@ fn metadata_hits(
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 bm25_rank, keyword_score, recency, freshness_boost, relevance_score, final_score
          FROM scored
-         ORDER BY final_score DESC, bm25_rank ASC, mtime DESC, session_id ASC"
+         ORDER BY mtime DESC, bm25_rank ASC, session_id ASC"
     ));
 
     let mut stmt = conn.prepare(&sql)?;
@@ -324,7 +323,7 @@ fn message_hits(
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
-                    snippet(messages_fts, 0, '[', ']', ' ... ', 64) AS snippet,
+                    snippet(messages_fts, 0, '', '', ' ... ', 64) AS snippet,
                     ccsf_recency_score(s.mtime) AS recency
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
@@ -794,47 +793,35 @@ mod tests {
     }
 
     #[test]
-    fn text_search_does_not_use_cwd_score() {
-        let conn = open_indexed_db();
-        insert_session(&conn, "s1", "/repo/current", None, Some("phaseone ranking"));
-
-        let hits = text_search(
-            &conn,
-            "phaseone",
-            Some(Path::new("/repo/current")),
-            false,
-            10,
-        )
-        .unwrap();
-        let scores = &hits.first().expect("matching hit").scores;
-
-        assert!(scores.cwd_boost.is_none());
-        assert!(scores.cwd_score.is_none());
-    }
-
-    #[test]
-    fn text_search_recency_boost_can_outrank_equal_relevance() {
+    fn text_search_sorts_matches_by_recency_before_relevance() {
         let conn = open_indexed_db();
         insert_session_at(
             &conn,
             "old",
             "/repo/current",
             None,
-            Some("phaseboost"),
+            Some("phaseboost phaseboost phaseboost"),
             1_700_000_000,
         );
         insert_session_at(
             &conn,
             "new",
             "/repo/other",
-            None,
             Some("phaseboost"),
+            None,
             current_unix_secs(),
         );
 
         let hits = text_search(&conn, "phaseboost", None, false, 2).unwrap();
 
         assert_eq!(hits.first().map(|h| h.session_id.as_str()), Some("new"));
+        assert!(
+            hits[1].scores.relevance_score > hits[0].scores.relevance_score,
+            "{:?}",
+            hits.iter()
+                .map(|h| (&h.session_id, h.scores.relevance_score))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -854,7 +841,14 @@ mod tests {
         assert!(
             hit.snippet
                 .as_deref()
-                .is_some_and(|snippet| snippet.contains("[bodyonly]")),
+                .is_some_and(|snippet| snippet.contains("bodyonly")),
+            "{:?}",
+            hit.snippet
+        );
+        assert!(
+            hit.snippet
+                .as_deref()
+                .is_some_and(|snippet| !snippet.contains("[bodyonly]")),
             "{:?}",
             hit.snippet
         );
@@ -975,7 +969,14 @@ mod tests {
         assert!(
             hit.snippet
                 .as_deref()
-                .is_some_and(|snippet| snippet.contains("[newsnippet]")),
+                .is_some_and(|snippet| snippet.contains("newsnippet")),
+            "{:?}",
+            hit.snippet
+        );
+        assert!(
+            hit.snippet
+                .as_deref()
+                .is_some_and(|snippet| !snippet.contains("[newsnippet]")),
             "{:?}",
             hit.snippet
         );
