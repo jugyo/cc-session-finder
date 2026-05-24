@@ -107,9 +107,7 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
                 }
                 if first_prompt.is_none() {
                     if let Some(text) = first_user_text(&v) {
-                        if !is_noise(&text) {
-                            first_prompt = Some(truncate(&text, 500));
-                        }
+                        first_prompt = Some(truncate(&text, 500));
                     }
                 }
             }
@@ -223,16 +221,13 @@ fn indexable_message_text(v: &Value) -> Option<(String, String)> {
     }
 
     let text = message_text(msg.get("content")?)?;
-    if text.trim().is_empty() {
-        return None;
-    }
 
     Some((role.to_string(), text))
 }
 
 fn message_text(content: &Value) -> Option<String> {
     if let Some(s) = content.as_str() {
-        return Some(s.to_string());
+        return conversation_text(s).map(str::to_string);
     }
 
     let parts = content.as_array()?;
@@ -240,7 +235,7 @@ fn message_text(content: &Value) -> Option<String> {
         .iter()
         .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("text"))
         .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
-        .filter(|text| !text.trim().is_empty())
+        .filter_map(conversation_text)
         .collect();
 
     if texts.is_empty() {
@@ -250,34 +245,44 @@ fn message_text(content: &Value) -> Option<String> {
     }
 }
 
-/// Pull the first text-type content from a user message record.
+/// Pull the first human-visible text-type content from a user message record.
 fn first_user_text(v: &Value) -> Option<String> {
     let msg = v.get("message")?;
     let content = msg.get("content")?;
 
-    // content can be a string or an array of parts.
     if let Some(s) = content.as_str() {
-        return Some(s.to_string());
+        return conversation_text(s).map(str::to_string);
     }
     let arr = content.as_array()?;
     for part in arr {
         if part.get("type").and_then(|t| t.as_str()) == Some("text") {
             if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                return Some(t.to_string());
+                if let Some(text) = conversation_text(t) {
+                    return Some(text.to_string());
+                }
             }
         }
     }
     None
 }
 
-fn is_noise(text: &str) -> bool {
+fn conversation_text(text: &str) -> Option<&str> {
+    is_human_visible_text(text).then_some(text)
+}
+
+pub(crate) fn is_human_visible_text(text: &str) -> bool {
     let trimmed = text.trim_start();
-    trimmed.is_empty()
-        || trimmed.starts_with("<ide_opened_file>")
+    !trimmed.is_empty() && !is_internal_transcript_text(trimmed)
+}
+
+fn is_internal_transcript_text(trimmed: &str) -> bool {
+    trimmed.starts_with("<ide_opened_file>")
         || trimmed.starts_with("<ide_selection>")
         || trimmed.starts_with("<command-")
         || trimmed.starts_with("<system-reminder>")
         || trimmed.starts_with("<local-command-")
+        || trimmed.starts_with("<bash-")
+        || trimmed.starts_with("<task-notification>")
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -353,6 +358,29 @@ mod tests {
     }
 
     #[test]
+    fn extracts_only_human_visible_text_parts() {
+        let out = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<bash-stdout>command output</bash-stdout>"},
+                    {"type": "text", "text": "please explain this failure"},
+                    {"type": "text", "text": "<task-notification><task-id>abc</task-id></task-notification>"}
+                ]
+            }
+        }));
+
+        assert_eq!(
+            out,
+            Some((
+                "user".to_string(),
+                "please explain this failure".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn extracts_assistant_text_parts() {
         let out = message(json!({
             "type": "assistant",
@@ -395,6 +423,35 @@ mod tests {
 
         assert_eq!(tool_result, None);
         assert_eq!(thinking, None);
+    }
+
+    #[test]
+    fn skips_noise_text_messages() {
+        let local_command = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "<local-command-stdout>cargo output</local-command-stdout>"
+            }
+        }));
+        let task_notification = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "<task-notification><task-id>abc</task-id></task-notification>"
+            }
+        }));
+        let bash_stdout = message(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "<bash-stdout>command output</bash-stdout>"
+            }
+        }));
+
+        assert_eq!(local_command, None);
+        assert_eq!(task_notification, None);
+        assert_eq!(bash_stdout, None);
     }
 
     #[test]

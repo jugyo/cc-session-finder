@@ -148,11 +148,39 @@ pub fn list(
 
     let mut stmt = conn.prepare(&sql)?;
     let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
-    let rows: Vec<Hit> = stmt
+    let mut rows: Vec<Hit> = stmt
         .query_map(params_iter.as_slice(), map_hit)?
         .collect::<Result<_, _>>()?;
+    attach_latest_message_snippets(conn, &mut rows)?;
 
     Ok(annotate(rows, cwd_s.as_deref()))
+}
+
+fn attach_latest_message_snippets(conn: &Connection, hits: &mut [Hit]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT role, text
+         FROM messages
+         WHERE session_id = ?1
+           AND role IN ('user', 'assistant')
+           AND trim(text) != ''
+         ORDER BY turn_index DESC, id DESC",
+    )?;
+
+    for hit in hits {
+        let mut rows = stmt.query(params![&hit.session_id])?;
+        while let Some(r) = rows.next()? {
+            let role = r.get::<_, String>(0)?;
+            let text = r.get::<_, String>(1)?;
+            if !crate::session::is_human_visible_text(&text) {
+                continue;
+            }
+            hit.snippet = Some(text);
+            hit.snippet_role = Some(role);
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 /// FTS5 text search using trigram tokens. The query is matched as a
@@ -634,6 +662,63 @@ mod tests {
 
         let hits = text_search(&conn, "session-finder", None, false, 10).unwrap();
         assert!(hits.iter().any(|h| h.session_id == "s1"), "{hits:?}");
+    }
+
+    #[test]
+    fn list_attaches_latest_message_as_snippet() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", Some("title"), None);
+        insert_message(&conn, "s1", 0, "user", "older message");
+        insert_message(&conn, "s1", 1, "assistant", "latest message body");
+
+        let hits = list(&conn, None, false, None, 10).unwrap();
+        let hit = hits.iter().find(|h| h.session_id == "s1").expect("hit");
+
+        assert_eq!(hit.snippet.as_deref(), Some("latest message body"));
+        assert_eq!(hit.snippet_role.as_deref(), Some("assistant"));
+    }
+
+    #[test]
+    fn list_snippet_ignores_non_message_roles() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", Some("title"), None);
+        insert_message(&conn, "s1", 0, "user", "visible user text");
+        insert_message(&conn, "s1", 1, "tool", "tool output should be ignored");
+        insert_message(&conn, "s1", 2, "system", "system output should be ignored");
+        insert_message(&conn, "s1", 3, "assistant", "   ");
+
+        let hits = list(&conn, None, false, None, 10).unwrap();
+        let hit = hits.iter().find(|h| h.session_id == "s1").expect("hit");
+
+        assert_eq!(hit.snippet.as_deref(), Some("visible user text"));
+        assert_eq!(hit.snippet_role.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn list_snippet_ignores_noise_message_text() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1", "/repo/current", Some("title"), None);
+        insert_message(&conn, "s1", 0, "assistant", "visible assistant text");
+        insert_message(
+            &conn,
+            "s1",
+            1,
+            "user",
+            "<local-command-stdout>cargo test output</local-command-stdout>",
+        );
+        insert_message(
+            &conn,
+            "s1",
+            2,
+            "user",
+            "<task-notification><task-id>abc</task-id></task-notification>",
+        );
+
+        let hits = list(&conn, None, false, None, 10).unwrap();
+        let hit = hits.iter().find(|h| h.session_id == "s1").expect("hit");
+
+        assert_eq!(hit.snippet.as_deref(), Some("visible assistant text"));
+        assert_eq!(hit.snippet_role.as_deref(), Some("assistant"));
     }
 
     #[test]
