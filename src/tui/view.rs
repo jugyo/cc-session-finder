@@ -538,11 +538,14 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &AppState, _tick: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentKind;
     use crate::index::search::Scores;
 
     fn hit_with_scores(scores: Scores) -> Hit {
         Hit {
             session_id: "s1".to_string(),
+            agent: AgentKind::Claude,
+            native_session_id: "s1".to_string(),
             ai_title: Some("title".to_string()),
             cwd: "/repo".to_string(),
             mtime: 0,

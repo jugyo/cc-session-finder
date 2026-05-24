@@ -1,4 +1,4 @@
-//! JSONL session file parser.
+//! Claude Code JSONL session file parser.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};

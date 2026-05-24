@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+mod agent;
 mod cli;
 mod index;
 mod launch;
@@ -49,7 +50,7 @@ enum Cmd {
     Show(ShowArgs),
     /// Update the index (incremental by default).
     Index(IndexArgs),
-    /// Resume a session by id (exec `claude --resume`).
+    /// Resume a session by id with its native agent CLI.
     Resume(ResumeArgs),
 }
 

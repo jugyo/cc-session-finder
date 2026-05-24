@@ -1,12 +1,12 @@
-//! Incremental scan: walk ~/.claude/projects, diff against DB, UPSERT changes.
+//! Incremental scan: walk agent session sources, diff against DB, UPSERT changes.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::session::{self, IndexableMessage, SessionMeta};
+use crate::agent::{self, AgentKind, SourceMessage, SourceSession};
 
 #[derive(Debug, Default, Clone)]
 pub struct IngestStats {
@@ -26,7 +26,7 @@ pub trait Progress: Send + Sync {
 pub struct NoopProgress;
 impl Progress for NoopProgress {}
 
-/// Scan all session files and update the DB.
+/// Scan all session records and update the DB.
 ///
 /// - `reindex=true` reparses every file regardless of mtime/size.
 ///
@@ -40,87 +40,89 @@ pub fn scan_and_update(
 ) -> Result<IngestStats> {
     let mut stats = IngestStats::default();
 
-    // 1. Existing rows: session_id -> (mtime, size)
-    let mut known: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
+    let mut known: HashMap<(AgentKind, String), (i64, i64)> = HashMap::new();
     {
-        let mut q = conn.prepare("SELECT session_id, mtime, size FROM sessions")?;
+        let mut q = conn.prepare("SELECT agent, session_id, mtime, size FROM sessions")?;
         let rows = q.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
             ))
         })?;
         for r in rows {
-            let (id, mt, sz) = r?;
-            known.insert(id, (mt, sz));
+            let (agent, id, mt, sz) = r?;
+            let Some(agent) = AgentKind::from_db(&agent) else {
+                continue;
+            };
+            known.insert((agent, id), (mt, sz));
         }
     }
 
-    // 2. Files on disk
-    let files = list_session_files()?;
-    stats.total = files.len() as u32;
+    let mut sources = Vec::new();
+    for kind in agent::all_kinds() {
+        match agent::list_sessions(*kind) {
+            Ok(records) => sources.push((*kind, records)),
+            Err(err) => tracing::warn!("scan {} sessions: {}", kind, err),
+        }
+    }
+
+    stats.total = sources
+        .iter()
+        .map(|(_, records)| records.len() as u32)
+        .sum();
     progress.on_total(stats.total);
 
-    let mut seen: HashSet<String> = HashSet::with_capacity(files.len());
+    let mut seen_by_agent: HashMap<AgentKind, HashSet<String>> = HashMap::new();
+    let mut done = 0u32;
 
-    for (i, path) in files.iter().enumerate() {
-        progress.on_file(i as u32, stats.total, path);
-        let id = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        seen.insert(id.clone());
+    for (kind, records) in &sources {
+        let seen = seen_by_agent.entry(*kind).or_default();
+        for record in records {
+            progress.on_file(done, stats.total, &record.path);
+            done = done.saturating_add(1);
+            seen.insert(record.session_id.clone());
 
-        let md = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let mtime = md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let size = md.len() as i64;
-
-        let stale = reindex
-            || match known.get(&id) {
-                Some((m, s)) => *m != mtime || *s != size,
-                None => true,
-            };
-        if !stale {
-            continue;
-        }
-
-        let meta = match session::extract_from_file(path) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("parse {}: {}", path.display(), e);
+            let key = (*kind, record.session_id.clone());
+            let stale = reindex
+                || match known.get(&key) {
+                    Some((m, s)) => *m != record.mtime || *s != record.size,
+                    None => true,
+                };
+            if !stale {
                 continue;
             }
-        };
-        let messages = match session::extract_indexable_messages_from_file(path) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("parse messages {}: {}", path.display(), e);
-                Vec::new()
-            }
-        };
-        upsert(conn, &meta)?;
-        replace_messages(conn, &meta.session_id, &messages)?;
-        stats.upserted += 1;
-        stats.indexed += 1;
+
+            let (meta, messages) = match agent::extract_session(record) {
+                Ok(session) => session,
+                Err(e) => {
+                    tracing::warn!("parse {}: {}", record.path.display(), e);
+                    continue;
+                }
+            };
+            upsert(conn, &meta)?;
+            replace_messages(conn, &meta.session_id, &messages)?;
+            stats.upserted += 1;
+            stats.indexed += 1;
+        }
     }
 
-    // 3. Delete vanished sessions
-    let to_delete: Vec<String> = known
+    let to_delete: Vec<(AgentKind, String)> = known
         .keys()
-        .filter(|id| !seen.contains(*id))
+        .filter(|(kind, id)| {
+            seen_by_agent
+                .get(kind)
+                .map(|seen| !seen.contains(id))
+                .unwrap_or(false)
+        })
         .cloned()
         .collect();
-    for id in &to_delete {
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", params![id])?;
+    for (kind, id) in &to_delete {
+        conn.execute(
+            "DELETE FROM sessions WHERE agent = ?1 AND session_id = ?2",
+            params![kind.as_str(), id],
+        )?;
         stats.deleted += 1;
     }
 
@@ -128,11 +130,7 @@ pub fn scan_and_update(
     Ok(stats)
 }
 
-fn replace_messages(
-    conn: &Connection,
-    session_id: &str,
-    messages: &[IndexableMessage],
-) -> Result<()> {
+fn replace_messages(conn: &Connection, session_id: &str, messages: &[SourceMessage]) -> Result<()> {
     conn.execute(
         "DELETE FROM messages WHERE session_id = ?",
         params![session_id],
@@ -154,16 +152,19 @@ fn replace_messages(
     Ok(())
 }
 
-fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
+fn upsert(conn: &Connection, m: &SourceSession) -> Result<()> {
     conn.execute(
         r#"INSERT INTO sessions
-              (session_id, project_dir, cwd, ai_title, first_prompt,
+              (session_id, agent, native_session_id, source_group,
+               cwd, ai_title, first_prompt,
                mtime, size, msg_count, file_path,
                git_branch, pr_number, pr_url, pr_repo,
                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
            ON CONFLICT(session_id) DO UPDATE SET
-              project_dir=excluded.project_dir,
+              agent=excluded.agent,
+              native_session_id=excluded.native_session_id,
+              source_group=excluded.source_group,
               cwd=excluded.cwd,
               ai_title=excluded.ai_title,
               first_prompt=excluded.first_prompt,
@@ -182,7 +183,9 @@ fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
         "#,
         params![
             m.session_id,
-            m.project_dir,
+            m.agent.as_str(),
+            m.native_session_id,
+            m.source_group.as_deref(),
             m.cwd.to_string_lossy(),
             m.ai_title,
             m.first_prompt,
@@ -204,16 +207,6 @@ fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
     Ok(())
 }
 
-fn list_session_files() -> Result<Vec<PathBuf>> {
-    let root = crate::paths::projects_root();
-    let pattern = format!("{}/*/*.jsonl", root.to_string_lossy());
-    let mut out = Vec::new();
-    for p in glob::glob(&pattern)?.flatten() {
-        out.push(p);
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,8 +221,8 @@ mod tests {
     fn insert_session(conn: &Connection, session_id: &str) {
         conn.execute(
             "INSERT INTO sessions
-               (session_id, project_dir, cwd, mtime, size, file_path)
-             VALUES (?1, '/p', '/cwd', 0, 0, '/f')",
+               (session_id, cwd, mtime, size, file_path)
+             VALUES (?1, '/cwd', 0, 0, '/f')",
             params![session_id],
         )
         .expect("insert session");
@@ -251,7 +244,7 @@ mod tests {
         replace_messages(
             &conn,
             "s1",
-            &[IndexableMessage {
+            &[SourceMessage {
                 turn_index: 0,
                 role: "user".to_string(),
                 text: "oldphase text".to_string(),
@@ -262,7 +255,7 @@ mod tests {
         replace_messages(
             &conn,
             "s1",
-            &[IndexableMessage {
+            &[SourceMessage {
                 turn_index: 0,
                 role: "assistant".to_string(),
                 text: "newphase text".to_string(),
@@ -293,7 +286,7 @@ mod tests {
         replace_messages(
             &conn,
             "s1",
-            &[IndexableMessage {
+            &[SourceMessage {
                 turn_index: 0,
                 role: "user".to_string(),
                 text: "deletephase text".to_string(),

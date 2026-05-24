@@ -49,7 +49,7 @@ pub fn decode_dir_hint(dir_name: &str) -> PathBuf {
 }
 
 /// Root for Claude Code project sessions.
-pub fn projects_root() -> PathBuf {
+pub fn claude_projects_root() -> PathBuf {
     let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     p.push(".claude");
     p.push("projects");

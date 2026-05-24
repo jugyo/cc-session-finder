@@ -8,9 +8,13 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
+use crate::agent::AgentKind;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub session_id: String,
+    pub agent: AgentKind,
+    pub native_session_id: String,
     pub ai_title: Option<String>,
     pub cwd: String,
     pub mtime: i64,
@@ -249,8 +253,9 @@ fn metadata_hits(
 ) -> Result<Vec<Hit>> {
     let mut sql = "WITH ranked AS (
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
-                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
+                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
+                    s.agent, s.native_session_id, s.source_group,
                     bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
              FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
              WHERE sessions_fts MATCH ?1"
@@ -275,8 +280,9 @@ fn metadata_hits(
              FROM components
          )
          SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
-                git_branch, pr_number, pr_url, pr_repo, project_dir,
+                git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                agent, native_session_id, source_group,
                 bm25_rank, keyword_score, recency, freshness_boost, relevance_score, final_score
          FROM scored
          ORDER BY mtime DESC, bm25_rank ASC, session_id ASC"
@@ -292,13 +298,13 @@ fn metadata_hits(
     };
     while let Some(r) = rows.next()? {
         let mut h = map_hit(r)?;
-        let final_score = r.get(21).unwrap_or(0.0);
+        let final_score = r.get(COL_FINAL_SCORE).unwrap_or(0.0);
         h.scores.text_search = Some(final_score);
-        h.scores.bm25_rank = Some(r.get(16).unwrap_or(0.0));
-        h.scores.keyword_score = Some(r.get(17).unwrap_or(0.0));
-        h.scores.recency = Some(r.get(18).unwrap_or(0.0));
-        h.scores.freshness_boost = Some(r.get(19).unwrap_or(1.0));
-        h.scores.relevance_score = Some(r.get(20).unwrap_or(0.0));
+        h.scores.bm25_rank = Some(r.get(COL_BM25_RANK).unwrap_or(0.0));
+        h.scores.keyword_score = Some(r.get(COL_KEYWORD_SCORE).unwrap_or(0.0));
+        h.scores.recency = Some(r.get(COL_RECENCY).unwrap_or(0.0));
+        h.scores.freshness_boost = Some(r.get(COL_FRESHNESS_BOOST).unwrap_or(1.0));
+        h.scores.relevance_score = Some(r.get(COL_RELEVANCE_SCORE).unwrap_or(0.0));
         h.scores.metadata_score = h.scores.keyword_score;
         h.scores.final_score = Some(final_score);
         hits.push(h);
@@ -324,8 +330,9 @@ fn message_hits(
 ) -> Result<Vec<MessageHit>> {
     let mut sql = "WITH scored AS (
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
-                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo, s.project_dir,
+                    s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
+                    s.agent, s.native_session_id, s.source_group,
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
@@ -343,8 +350,9 @@ fn message_hits(
         "
          )
          SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
-                git_branch, pr_number, pr_url, pr_repo, project_dir,
+                git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                agent, native_session_id, source_group,
                 rank, role, snippet, recency, 1.0 + recency * {FRESHNESS_BOOST_WEIGHT} AS freshness_boost
          FROM scored
          ORDER BY rank ASC, mtime DESC, session_id ASC, turn_index ASC",
@@ -360,11 +368,11 @@ fn message_hits(
     let mut hits_by_id: HashMap<String, MessageHit> = HashMap::new();
     while let Some(r) = rows.next()? {
         let mut hit = map_hit(r)?;
-        let bm25_rank = r.get(16).unwrap_or(0.0);
-        let role: Option<String> = r.get(17).ok();
-        let snippet: Option<String> = r.get(18).ok();
-        let recency = r.get(19).unwrap_or(0.0);
-        let freshness_boost = r.get(20).unwrap_or(1.0);
+        let bm25_rank = r.get(COL_MESSAGE_RANK).unwrap_or(0.0);
+        let role: Option<String> = r.get(COL_MESSAGE_ROLE).ok();
+        let snippet: Option<String> = r.get(COL_MESSAGE_SNIPPET).ok();
+        let recency = r.get(COL_MESSAGE_RECENCY).unwrap_or(0.0);
+        let freshness_boost = r.get(COL_MESSAGE_FRESHNESS_BOOST).unwrap_or(1.0);
         hit.snippet = snippet.clone();
         hit.snippet_role = role.clone();
         hits_by_id
@@ -450,14 +458,45 @@ fn build_fts_query(q: &str) -> String {
 
 /// Columns expected (in this exact order) by `map_hit`.
 const HIT_COLS: &str = "session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path, \
-     git_branch, pr_number, pr_url, pr_repo, project_dir, \
-     tokens_input, tokens_output, tokens_cache_read, tokens_cache_create";
+     git_branch, pr_number, pr_url, pr_repo, \
+     tokens_input, tokens_output, tokens_cache_read, tokens_cache_create, \
+     agent, native_session_id, source_group";
+
+const HIT_COL_COUNT: usize = 18;
+const COL_BM25_RANK: usize = HIT_COL_COUNT;
+const COL_KEYWORD_SCORE: usize = HIT_COL_COUNT + 1;
+const COL_RECENCY: usize = HIT_COL_COUNT + 2;
+const COL_FRESHNESS_BOOST: usize = HIT_COL_COUNT + 3;
+const COL_RELEVANCE_SCORE: usize = HIT_COL_COUNT + 4;
+const COL_FINAL_SCORE: usize = HIT_COL_COUNT + 5;
+
+const COL_MESSAGE_RANK: usize = HIT_COL_COUNT;
+const COL_MESSAGE_ROLE: usize = HIT_COL_COUNT + 1;
+const COL_MESSAGE_SNIPPET: usize = HIT_COL_COUNT + 2;
+const COL_MESSAGE_RECENCY: usize = HIT_COL_COUNT + 3;
+const COL_MESSAGE_FRESHNESS_BOOST: usize = HIT_COL_COUNT + 4;
 
 fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
-    let project_dir: String = r.get(11)?;
-    let is_worktree = project_dir.contains("--claude-worktrees-");
+    let session_id: String = r.get(0)?;
+    let agent = r
+        .get::<_, String>(15)
+        .ok()
+        .and_then(|agent| AgentKind::from_db(&agent))
+        .unwrap_or(AgentKind::Claude);
+    let native_session_id = r
+        .get::<_, Option<String>>(16)
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| session_id.clone());
+    let source_group = r.get::<_, Option<String>>(17).ok().flatten();
+    let is_worktree = source_group
+        .as_deref()
+        .is_some_and(|source_group| source_group.contains("--claude-worktrees-"));
     Ok(Hit {
-        session_id: r.get(0)?,
+        session_id,
+        agent,
+        native_session_id,
         ai_title: r.get(1)?,
         cwd: r.get(2)?,
         mtime: r.get(3)?,
@@ -469,10 +508,10 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         pr_url: r.get(9)?,
         pr_repo: r.get(10)?,
         is_worktree,
-        tokens_input: r.get::<_, i64>(12).unwrap_or(0).max(0) as u64,
-        tokens_output: r.get::<_, i64>(13).unwrap_or(0).max(0) as u64,
-        tokens_cache_read: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
-        tokens_cache_create: r.get::<_, i64>(15).unwrap_or(0).max(0) as u64,
+        tokens_input: r.get::<_, i64>(11).unwrap_or(0).max(0) as u64,
+        tokens_output: r.get::<_, i64>(12).unwrap_or(0).max(0) as u64,
+        tokens_cache_read: r.get::<_, i64>(13).unwrap_or(0).max(0) as u64,
+        tokens_cache_create: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
         labels: Vec::new(),
         snippet: None,
         snippet_role: None,
@@ -487,6 +526,9 @@ fn annotate(mut hits: Vec<Hit>, cwd: Option<&str>) -> Vec<Hit> {
             if c == h.cwd {
                 h.labels.insert(0, "cwd".to_string());
             }
+        }
+        if h.agent != AgentKind::Claude {
+            h.labels.insert(0, h.agent.as_str().to_string());
         }
         if h.labels.is_empty() {
             h.labels.push("recent".to_string());
@@ -586,8 +628,8 @@ mod tests {
     ) {
         conn.execute(
             "INSERT INTO sessions
-               (session_id, project_dir, cwd, ai_title, first_prompt, mtime, size, file_path)
-             VALUES (?1, '/p', ?2, ?3, ?4, ?5, 0, '/f')",
+               (session_id, cwd, ai_title, first_prompt, mtime, size, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, '/f')",
             params![id, cwd, ai_title, first_prompt, mtime],
         )
         .expect("insert");

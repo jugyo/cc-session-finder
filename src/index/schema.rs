@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -25,7 +25,9 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
             session_id    TEXT PRIMARY KEY,
-            project_dir   TEXT NOT NULL,
+            agent         TEXT NOT NULL DEFAULT 'claude',
+            native_session_id TEXT NOT NULL DEFAULT '',
+            source_group  TEXT,
             cwd           TEXT NOT NULL,
             ai_title      TEXT,
             first_prompt  TEXT,
@@ -127,8 +129,8 @@ mod tests {
     fn insert_session(conn: &Connection, id: &str) {
         conn.execute(
             "INSERT INTO sessions
-               (session_id, project_dir, cwd, mtime, size, file_path)
-             VALUES (?1, '/p', '/cwd', 0, 0, '/f')",
+               (session_id, cwd, mtime, size, file_path)
+             VALUES (?1, '/cwd', 0, 0, '/f')",
             params![id],
         )
         .expect("insert session");
@@ -152,6 +154,17 @@ mod tests {
 
         assert!(!columns.iter().any(|column| column == "preview"));
         assert!(!columns.iter().any(|column| column == "embedded_at"));
+    }
+
+    #[test]
+    fn session_schema_tracks_source_identity() {
+        let conn = open_indexed_db();
+        let columns = table_columns(&conn, "sessions");
+
+        assert!(columns.iter().any(|column| column == "agent"));
+        assert!(columns.iter().any(|column| column == "native_session_id"));
+        assert!(columns.iter().any(|column| column == "source_group"));
+        assert!(!columns.iter().any(|column| column == "project_dir"));
     }
 
     #[test]
