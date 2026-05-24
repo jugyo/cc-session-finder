@@ -34,29 +34,23 @@ pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
 fn draw_query_box(f: &mut Frame, area: Rect, state: &AppState) {
     let q = state.editor.query();
 
-    let spans: Vec<Span> = vec![
-        Span::styled("> ", Style::default().fg(Color::Cyan)),
-        Span::raw(q),
-    ];
+    let spans: Vec<Span> = vec![Span::raw(q)];
 
-    let block = Block::default().borders(Borders::ALL).title("search");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
     let p = Paragraph::new(Line::from(spans)).block(block.clone());
     f.render_widget(p, area);
 
     // Caret position.
     let cursor_col = state.editor.cursor_col();
-    let prefix_w: u16 = 2; // "> "
-    let cx = area.x + 1 + prefix_w + cursor_col; // inside the bordered box
+    let cx = area.x + 1 + cursor_col; // inside the bordered box
     let cy = area.y + 1;
     f.set_cursor_position((cx.min(area.right().saturating_sub(2)), cy));
 }
 
 fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("sessions ({})", state.results.len()));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = area;
 
     let viewport_height = inner.height as usize;
     if viewport_height == 0 {
@@ -68,13 +62,11 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
-        .enumerate()
-        .map(|(i, hit)| {
-            let selected = i == state.selected;
+        .map(|hit| {
             render_result_lines(
                 hit,
                 content_width,
-                state.explain && selected,
+                state.explain,
                 state.snippet_lines,
                 &highlight_terms,
             )
@@ -139,7 +131,7 @@ fn render_result_lines(
     ];
     lines.push(metadata_line(hit, width));
     if explain {
-        if let Some(line) = score_breakdown_line(hit, width) {
+        for line in score_breakdown_lines(hit, width) {
             lines.push(Line::from(Span::styled(
                 line,
                 Style::default().fg(Color::DarkGray),
@@ -249,28 +241,59 @@ fn result_scroll_offset(item_heights: &[usize], selected: usize, viewport_height
     offset
 }
 
-fn score_breakdown_line(hit: &Hit, width: u16) -> Option<String> {
+fn score_breakdown_lines(hit: &Hit, width: u16) -> Vec<String> {
     let scores = &hit.scores;
-    let final_score = scores.final_score?;
+    let Some(final_score) = scores.final_score else {
+        return Vec::new();
+    };
+    let Some(relevance) = scores.relevance_score else {
+        return Vec::new();
+    };
+    let Some(freshness) = scores.freshness_boost else {
+        return Vec::new();
+    };
+
+    let mut lines = vec![fit_width(
+        format!(
+            "score {:.2} = relevance {:.2} * freshness {:.2}",
+            final_score, relevance, freshness
+        ),
+        width,
+    )];
+
     if let Some(message) = scores.message_weighted_score {
         let metadata = scores.metadata_score.unwrap_or(0.0);
-        let count_bonus = scores.message_count_bonus.unwrap_or(0.0);
         let match_count = scores.message_match_count.unwrap_or(0);
-        let line = format!(
-            "  score {:.2} = metadata {:.2} + message {:.2} + count {:.2} ({} hits)",
-            final_score, metadata, message, count_bonus, match_count
-        );
-        return Some(fit_width(line, width));
+        lines.push(fit_width(
+            format!(
+                "relevance {:.2} = max(metadata {:.2}, message {:.2}) ({} hits)",
+                relevance, metadata, message, match_count
+            ),
+            width,
+        ));
+    } else {
+        let metadata = scores.metadata_score.unwrap_or(relevance);
+        lines.push(fit_width(
+            format!("relevance {:.2} = metadata {:.2}", relevance, metadata),
+            width,
+        ));
     }
 
-    let keyword = scores.keyword_score?;
-    let cwd = scores.cwd_score?;
-    let recency = scores.recency?;
-    let line = format!(
-        "  score {:.2} = keyword {:.2} + cwd {:.2} + recency {:.2}",
-        final_score, keyword, cwd, recency
-    );
-    Some(fit_width(line, width))
+    if let Some(keyword) = scores.keyword_score {
+        let metadata = scores.metadata_score.unwrap_or(keyword);
+        lines.push(fit_width(
+            format!("metadata {:.2} = keyword {:.2}", metadata, keyword),
+            width,
+        ));
+    }
+
+    let recency = scores.recency.unwrap_or(0.0);
+    lines.push(fit_width(
+        format!("freshness {:.2}x (recency {:.2})", freshness, recency),
+        width,
+    ));
+
+    lines
 }
 
 fn fit_width(line: String, width: u16) -> String {
@@ -617,19 +640,21 @@ mod tests {
         let mut hit = hit_with_snippet(Some("body [needle] text"), Some("assistant"));
         hit.scores = Scores {
             keyword_score: Some(1.0),
-            cwd_score: Some(2.0),
+            metadata_score: Some(1.0),
             recency: Some(0.5),
-            final_score: Some(3.5),
+            freshness_boost: Some(1.5),
+            relevance_score: Some(1.0),
+            final_score: Some(1.5),
             ..Scores::default()
         };
 
         let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 8);
         assert_eq!(lines[1].spans[0].content.as_ref(), "body [needle] text");
         assert_eq!(
             lines[3].spans[0].content.as_ref(),
-            "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
+            "score 1.50 = relevance 1.00 * freshness 1.50"
         );
     }
 
@@ -647,18 +672,32 @@ mod tests {
     fn explain_adds_score_line_when_scores_are_available() {
         let hit = hit_with_scores(Scores {
             keyword_score: Some(1.0),
-            cwd_score: Some(2.0),
+            metadata_score: Some(1.0),
             recency: Some(0.5),
-            final_score: Some(3.5),
+            freshness_boost: Some(1.5),
+            relevance_score: Some(1.0),
+            final_score: Some(1.5),
             ..Scores::default()
         });
 
         let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 8);
         assert_eq!(
             lines[3].spans[0].content.as_ref(),
-            "  score 3.50 = keyword 1.00 + cwd 2.00 + recency 0.50"
+            "score 1.50 = relevance 1.00 * freshness 1.50"
+        );
+        assert_eq!(
+            lines[4].spans[0].content.as_ref(),
+            "relevance 1.00 = metadata 1.00"
+        );
+        assert_eq!(
+            lines[5].spans[0].content.as_ref(),
+            "metadata 1.00 = keyword 1.00"
+        );
+        assert_eq!(
+            lines[6].spans[0].content.as_ref(),
+            "freshness 1.50x (recency 0.50)"
         );
     }
 
@@ -668,17 +707,23 @@ mod tests {
             metadata_score: Some(2.5),
             message_weighted_score: Some(0.75),
             message_match_count: Some(2),
-            message_count_bonus: Some(0.16),
-            final_score: Some(3.41),
+            recency: Some(0.25),
+            freshness_boost: Some(1.25),
+            relevance_score: Some(2.5),
+            final_score: Some(3.125),
             ..Scores::default()
         });
 
         let lines = render_result_lines(&hit, 80, true, 2, &[]);
 
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 7);
         assert_eq!(
             lines[3].spans[0].content.as_ref(),
-            "  score 3.41 = metadata 2.50 + message 0.75 + count 0.16 (2 hits)"
+            "score 3.12 = relevance 2.50 * freshness 1.25"
+        );
+        assert_eq!(
+            lines[4].spans[0].content.as_ref(),
+            "relevance 2.50 = max(metadata 2.50, message 0.75) (2 hits)"
         );
     }
 
