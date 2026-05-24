@@ -67,6 +67,9 @@ cc-session-finder graphql
 
 #### Result labels
 
+Labels are shown at the start of TUI result rows and are also included in CLI
+JSON / TSV output.
+
 | Label | Meaning |
 | -- | -- |
 | `[cwd]` | Session's `cwd` matches the current working directory |
@@ -81,6 +84,9 @@ TTY. The default output format is JSON.
 ```sh
 # Keyword search
 cc-session-finder search "graphql migration" --limit 10
+
+# Include ranking details in JSON output
+cc-session-finder --explain search "graphql migration" --limit 10
 
 # Newest-first listing
 cc-session-finder list --limit 50 --since 7d

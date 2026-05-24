@@ -219,9 +219,10 @@ pub fn text_search(
     }
 
     let mut hits: Vec<Hit> = hits_by_id.into_values().collect();
+    let current_cwd = cwd_s.as_deref();
     hits.sort_by(|a, b| {
-        b.mtime
-            .cmp(&a.mtime)
+        cwd_match_sort_order(a, b, current_cwd)
+            .then_with(|| b.mtime.cmp(&a.mtime))
             .then_with(|| {
                 b.scores
                     .relevance_score
@@ -233,6 +234,11 @@ pub fn text_search(
     hits.truncate(limit);
 
     Ok(annotate(hits, cwd_s.as_deref()))
+}
+
+fn cwd_match_sort_order(a: &Hit, b: &Hit, cwd: Option<&str>) -> std::cmp::Ordering {
+    cwd.map(|cwd| (b.cwd == cwd).cmp(&(a.cwd == cwd)))
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 fn metadata_hits(
@@ -578,16 +584,11 @@ mod tests {
         first_prompt: Option<&str>,
         mtime: i64,
     ) {
-        let preview = [ai_title, first_prompt]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" | ");
         conn.execute(
             "INSERT INTO sessions
-               (session_id, project_dir, cwd, ai_title, first_prompt, preview, mtime, size, file_path)
-             VALUES (?1, '/p', ?2, ?3, ?4, ?5, ?6, 0, '/f')",
-            params![id, cwd, ai_title, first_prompt, preview, mtime],
+               (session_id, project_dir, cwd, ai_title, first_prompt, mtime, size, file_path)
+             VALUES (?1, '/p', ?2, ?3, ?4, ?5, 0, '/f')",
+            params![id, cwd, ai_title, first_prompt, mtime],
         )
         .expect("insert");
     }
@@ -822,6 +823,40 @@ mod tests {
                 .map(|h| (&h.session_id, h.scores.relevance_score))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn text_search_boosts_current_cwd_before_newer_results() {
+        let conn = open_indexed_db();
+        insert_session_at(
+            &conn,
+            "current",
+            "/repo/current",
+            None,
+            Some("phasecwd match"),
+            1_700_000_000,
+        );
+        insert_session_at(
+            &conn,
+            "other",
+            "/repo/other",
+            None,
+            Some("phasecwd match"),
+            current_unix_secs(),
+        );
+
+        let hits = text_search(
+            &conn,
+            "phasecwd",
+            Some(Path::new("/repo/current")),
+            false,
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(hits.first().map(|h| h.session_id.as_str()), Some("current"));
+        let labels: Vec<&str> = hits[0].labels.iter().map(String::as_str).collect();
+        assert_eq!(labels, ["cwd", "match"]);
     }
 
     #[test]

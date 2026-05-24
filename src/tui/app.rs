@@ -4,7 +4,6 @@
 use std::io::{self, Stdout};
 use std::process::ExitCode;
 use std::sync::mpsc as std_mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,11 +29,10 @@ pub struct AppState {
     pub cwd: Option<std::path::PathBuf>,
     pub last_query_at: Option<Instant>,
     pub explain: bool,
-    pub snippet_lines: usize,
 }
 
 impl AppState {
-    fn new(initial_query: Option<String>, explain: bool, snippet_lines: usize) -> Self {
+    fn new(initial_query: Option<String>, explain: bool) -> Self {
         Self {
             editor: QueryEditor::with_initial(initial_query.unwrap_or_default()),
             results: Vec::new(),
@@ -42,12 +40,11 @@ impl AppState {
             cwd: std::env::current_dir().ok(),
             last_query_at: None,
             explain,
-            snippet_lines,
         }
     }
 }
 
-pub fn run(initial_query: Option<String>, explain: bool, snippet_lines: usize) -> Result<ExitCode> {
+pub fn run(initial_query: Option<String>, explain: bool) -> Result<ExitCode> {
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -55,7 +52,7 @@ pub fn run(initial_query: Option<String>, explain: bool, snippet_lines: usize) -
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let exit_code = run_loop(&mut terminal, initial_query, explain, snippet_lines);
+    let exit_code = run_loop(&mut terminal, initial_query, explain);
 
     // Tear down.
     disable_raw_mode()?;
@@ -70,11 +67,10 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     initial_query: Option<String>,
     explain: bool,
-    snippet_lines: usize,
 ) -> Result<ExitCode> {
     let (tx, rx) = std_mpsc::channel::<Event>();
 
-    let conn = Arc::new(Mutex::new(index::open()?));
+    let conn = index::open()?;
 
     // Spawn terminal input pump.
     {
@@ -95,7 +91,7 @@ fn run_loop(
         });
     }
 
-    let mut state = AppState::new(initial_query, explain, snippet_lines);
+    let mut state = AppState::new(initial_query, explain);
 
     // Initial query: list newest (using whatever is already in the DB).
     refresh_results(&conn, &mut state)?;
@@ -288,14 +284,13 @@ fn handle_editor_key(state: &mut AppState, k: KeyEvent) -> Option<String> {
     }
 }
 
-fn refresh_results(conn: &Arc<Mutex<rusqlite::Connection>>, state: &mut AppState) -> Result<()> {
+fn refresh_results(conn: &rusqlite::Connection, state: &mut AppState) -> Result<()> {
     let q = state.editor.query().to_string();
     let cwd = state.cwd.clone();
-    let conn = conn.lock().expect("conn poisoned");
     state.results = if q.trim().is_empty() {
-        index::search::list(&conn, cwd.as_deref(), false, None, 100)?
+        index::search::list(conn, cwd.as_deref(), false, None, 100)?
     } else {
-        index::search::text_search(&conn, &q, cwd.as_deref(), false, 100)?
+        index::search::text_search(conn, &q, cwd.as_deref(), false, 100)?
     };
     state.selected = 0;
     Ok(())

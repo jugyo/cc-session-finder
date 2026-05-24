@@ -202,8 +202,6 @@ pub fn extract_indexable_messages_from_file(path: &Path) -> Result<Vec<Indexable
     Ok(messages)
 }
 
-const _: fn(&Path) -> Result<Vec<IndexableMessage>> = extract_indexable_messages_from_file;
-
 fn usage_u64(usage: &Value, key: &str) -> u64 {
     usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
 }
@@ -295,21 +293,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
         out.push(c);
     }
     out
-}
-
-/// preview = title + " | " + first_prompt (for FTS5 indexing).
-pub fn build_preview(meta: &SessionMeta) -> String {
-    let mut s = String::new();
-    if let Some(t) = &meta.ai_title {
-        s.push_str(t);
-    }
-    if let Some(p) = &meta.first_prompt {
-        if !s.is_empty() {
-            s.push_str(" | ");
-        }
-        s.push_str(p);
-    }
-    s
 }
 
 #[cfg(test)]

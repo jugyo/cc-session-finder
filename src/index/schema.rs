@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -29,12 +29,10 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             cwd           TEXT NOT NULL,
             ai_title      TEXT,
             first_prompt  TEXT,
-            preview       TEXT,
             mtime         INTEGER NOT NULL,
             size          INTEGER NOT NULL,
             msg_count     INTEGER,
             file_path     TEXT NOT NULL,
-            embedded_at   INTEGER,
             git_branch    TEXT,
             pr_number     INTEGER,
             pr_url        TEXT,
@@ -145,6 +143,15 @@ mod tests {
             ["id", "session_id", "turn_index", "role", "text"]
         );
         assert_eq!(table_columns(&conn, "messages_fts"), ["text"]);
+    }
+
+    #[test]
+    fn session_schema_has_no_embedding_leftovers() {
+        let conn = open_indexed_db();
+        let columns = table_columns(&conn, "sessions");
+
+        assert!(!columns.iter().any(|column| column == "preview"));
+        assert!(!columns.iter().any(|column| column == "embedded_at"));
     }
 
     #[test]

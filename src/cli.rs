@@ -98,7 +98,6 @@ pub fn run_show(args: ShowArgs) -> Result<ExitCode> {
         Some(h) => {
             let json = serde_json::to_string_pretty(&h)?;
             println!("{}", json);
-            let _ = args.with_preview; // body preview is v2
             Ok(ExitCode::SUCCESS)
         }
         None => {

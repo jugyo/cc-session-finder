@@ -37,9 +37,6 @@ struct Cli {
     /// Show ranking explanation details when available
     #[arg(long, global = true)]
     explain: bool,
-
-    #[arg(long, global = true, hide = true, default_value_t = 2)]
-    snippet_lines: usize,
 }
 
 #[derive(Debug, Subcommand)]
@@ -92,9 +89,6 @@ struct ListArgs {
 #[derive(Debug, Args)]
 struct ShowArgs {
     session_id: String,
-    /// Include up to N user/assistant messages with body
-    #[arg(long)]
-    with_preview: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -139,7 +133,7 @@ fn main() -> ExitCode {
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         None => {
             if atty::is(atty::Stream::Stdout) {
-                tui::run(cli.query, cli.reindex, cli.explain, cli.snippet_lines)
+                tui::run(cli.query, cli.reindex, cli.explain)
             } else {
                 // Non-TTY without subcommand → behave like `list --format json`
                 cli::run_list(

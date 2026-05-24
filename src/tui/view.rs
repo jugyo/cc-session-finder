@@ -62,15 +62,7 @@ fn draw_results(f: &mut Frame, area: Rect, state: &AppState) {
     let items: Vec<Vec<Line<'static>>> = state
         .results
         .iter()
-        .map(|hit| {
-            render_result_lines(
-                hit,
-                content_width,
-                state.explain,
-                state.snippet_lines,
-                &highlight_terms,
-            )
-        })
+        .map(|hit| render_result_lines(hit, content_width, state.explain, &highlight_terms))
         .collect();
     let item_heights: Vec<usize> = items.iter().map(|lines| item_height(lines)).collect();
     let offset = result_scroll_offset(&item_heights, state.selected, viewport_height);
@@ -122,12 +114,11 @@ fn render_result_lines(
     hit: &Hit,
     width: u16,
     explain: bool,
-    snippet_lines: usize,
     highlight_terms: &[String],
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         title_line(hit, width),
-        snippet_line(hit, width, snippet_lines, highlight_terms),
+        snippet_line(hit, width, highlight_terms),
     ];
     lines.push(metadata_line(hit, width));
     if explain {
@@ -144,23 +135,28 @@ fn render_result_lines(
 
 fn title_line(hit: &Hit, width: u16) -> Line<'static> {
     let title = display_title(hit);
+    let label_prefix = labels_prefix(&hit.labels);
+    let title = if label_prefix.is_empty() {
+        title
+    } else {
+        format!("{label_prefix} {title}")
+    };
     Line::from(Span::styled(
         truncate_to_width(&title, width),
         Style::default().add_modifier(Modifier::BOLD),
     ))
 }
 
-fn snippet_line(
-    hit: &Hit,
-    width: u16,
-    snippet_lines: usize,
-    highlight_terms: &[String],
-) -> Line<'static> {
-    let snippet = if snippet_lines == 0 {
-        String::new()
-    } else {
-        hit.snippet.as_deref().map(one_line).unwrap_or_default()
-    };
+fn labels_prefix(labels: &[String]) -> String {
+    labels
+        .iter()
+        .map(|label| format!("[{label}]"))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn snippet_line(hit: &Hit, width: u16, highlight_terms: &[String]) -> Line<'static> {
+    let snippet = hit.snippet.as_deref().map(one_line).unwrap_or_default();
     Line::from(split_with_highlight(
         &truncate_to_width(&snippet, width),
         Style::default().fg(Color::Gray),
@@ -606,13 +602,23 @@ mod tests {
     fn item_uses_title_snippet_status_and_margin() {
         let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
 
-        let lines = render_result_lines(&hit, 80, false, 2, &[]);
+        let lines = render_result_lines(&hit, 80, false, &[]);
 
         assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0].spans[0].content.as_ref(), "title");
+        assert_eq!(lines[0].spans[0].content.as_ref(), "[match] title");
         assert_eq!(lines[1].spans[0].content.as_ref(), "before [needle] after");
         assert!(lines[2].spans[0].content.as_ref().contains("ago"));
         assert_eq!(lines[3].spans[0].content.as_ref(), "");
+    }
+
+    #[test]
+    fn title_line_renders_result_labels() {
+        let mut hit = hit_with_scores(Scores::default());
+        hit.labels = vec!["cwd".to_string(), "match".to_string()];
+
+        let lines = render_result_lines(&hit, 80, false, &[]);
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "[cwd][match] title");
     }
 
     #[test]
@@ -624,7 +630,7 @@ mod tests {
         hit.pr_number = Some(2614);
         hit.tokens_input = 79_400;
 
-        let lines = render_result_lines(&hit, 200, false, 2, &[]);
+        let lines = render_result_lines(&hit, 200, false, &[]);
 
         let status = lines[2].spans[0].content.as_ref();
         assert!(status.contains("ago"), "{status}");
@@ -670,20 +676,10 @@ mod tests {
         let snippet = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen";
         let hit = hit_with_snippet(Some(snippet), Some("user"));
 
-        let lines = render_result_lines(&hit, 24, false, 2, &[]);
+        let lines = render_result_lines(&hit, 24, false, &[]);
 
         assert_eq!(lines.len(), 4);
         assert!(lines[1].spans[0].content.as_ref().ends_with('…'));
-    }
-
-    #[test]
-    fn snippet_lines_zero_hides_snippet() {
-        let hit = hit_with_snippet(Some("before [needle] after"), Some("user"));
-
-        let lines = render_result_lines(&hit, 80, false, 0, &[]);
-
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[1].spans[0].content.as_ref(), "");
     }
 
     #[test]
@@ -691,7 +687,7 @@ mod tests {
         let hit = hit_with_snippet(Some("before Alpha then Beta after"), Some("user"));
         let terms = highlight_terms("alpha beta");
 
-        let lines = render_result_lines(&hit, 80, false, 2, &terms);
+        let lines = render_result_lines(&hit, 80, false, &terms);
 
         assert_eq!(lines.len(), 4);
         let highlighted: Vec<_> = lines[1]
@@ -707,7 +703,7 @@ mod tests {
     fn snippet_is_omitted_when_missing() {
         let hit = hit_with_snippet(None, None);
 
-        let lines = render_result_lines(&hit, 80, false, 2, &[]);
+        let lines = render_result_lines(&hit, 80, false, &[]);
 
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[1].spans[0].content.as_ref(), "");
@@ -718,8 +714,8 @@ mod tests {
         let hit = hit_with_scores(Scores::default());
         let terms = highlight_terms("title");
 
-        let lines = render_result_lines(&hit, 80, false, 2, &terms);
-        assert_eq!(lines[0].spans[0].content.as_ref(), "title");
+        let lines = render_result_lines(&hit, 80, false, &terms);
+        assert_eq!(lines[0].spans[0].content.as_ref(), "[match] title");
         assert_ne!(lines[0].spans[0].style.fg, Some(Color::Yellow));
     }
 
@@ -736,7 +732,7 @@ mod tests {
             ..Scores::default()
         };
 
-        let lines = render_result_lines(&hit, 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, &[]);
 
         assert_eq!(lines.len(), 8);
         assert_eq!(lines[1].spans[0].content.as_ref(), "body [needle] text");
@@ -750,7 +746,7 @@ mod tests {
     fn snippet_line_is_clipped_to_width() {
         let hit = hit_with_snippet(Some("1234567890"), Some("user"));
 
-        let lines = render_result_lines(&hit, 12, false, 2, &[]);
+        let lines = render_result_lines(&hit, 12, false, &[]);
 
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[1].spans[0].content.as_ref(), "1234567890");
@@ -768,7 +764,7 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, &[]);
 
         assert_eq!(lines.len(), 8);
         assert_eq!(
@@ -802,7 +798,7 @@ mod tests {
             ..Scores::default()
         });
 
-        let lines = render_result_lines(&hit, 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, &[]);
 
         assert_eq!(lines.len(), 7);
         assert_eq!(
@@ -819,7 +815,7 @@ mod tests {
     fn explain_omits_score_line_when_scores_are_missing() {
         let hit = hit_with_scores(Scores::default());
 
-        let lines = render_result_lines(&hit, 80, true, 2, &[]);
+        let lines = render_result_lines(&hit, 80, true, &[]);
 
         assert_eq!(lines.len(), 4);
     }

@@ -155,20 +155,18 @@ fn replace_messages(
 }
 
 fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
-    let preview = session::build_preview(m);
     conn.execute(
         r#"INSERT INTO sessions
-              (session_id, project_dir, cwd, ai_title, first_prompt, preview,
-               mtime, size, msg_count, file_path, embedded_at,
+              (session_id, project_dir, cwd, ai_title, first_prompt,
+               mtime, size, msg_count, file_path,
                git_branch, pr_number, pr_url, pr_repo,
                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,?11,?12,?13,?14,?15,?16,?17,?18)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
            ON CONFLICT(session_id) DO UPDATE SET
               project_dir=excluded.project_dir,
               cwd=excluded.cwd,
               ai_title=excluded.ai_title,
               first_prompt=excluded.first_prompt,
-              preview=excluded.preview,
               mtime=excluded.mtime,
               size=excluded.size,
               msg_count=excluded.msg_count,
@@ -180,8 +178,7 @@ fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
               tokens_input=excluded.tokens_input,
               tokens_output=excluded.tokens_output,
               tokens_cache_read=excluded.tokens_cache_read,
-              tokens_cache_create=excluded.tokens_cache_create,
-              embedded_at=CASE WHEN sessions.preview <> excluded.preview THEN NULL ELSE sessions.embedded_at END
+              tokens_cache_create=excluded.tokens_cache_create
         "#,
         params![
             m.session_id,
@@ -189,7 +186,6 @@ fn upsert(conn: &Connection, m: &SessionMeta) -> Result<()> {
             m.cwd.to_string_lossy(),
             m.ai_title,
             m.first_prompt,
-            preview,
             m.mtime,
             m.size,
             m.msg_count,

@@ -31,7 +31,7 @@ src/
 ├── main.rs           # CLI entry (clap), subcommand dispatch
 ├── cli.rs            # Non-interactive subcommands (search/list/show/index/resume)
 ├── tui/              # ratatui-based TUI
-│   ├── mod.rs        # tokio::select event loop
+│   ├── mod.rs        # TUI startup after indexing
 │   ├── app.rs        # State management and key bindings
 │   ├── view.rs       # Rendering
 │   ├── input.rs      # IME / multi-byte safe query editor
@@ -44,7 +44,6 @@ src/
 ├── session.rs        # JSONL parser → SessionRecord
 ├── paths.rs          # cwd <-> project_dir encoding, cache root
 ├── relative_time.rs  # "3h ago" style relative timestamps
-├── template.rs       # Row rendering template
 └── launch.rs         # execvp("claude", ["claude", "--resume", ...])
 ```
 
@@ -67,8 +66,8 @@ cargo clippy --all-targets -- -D warnings
 
 - `cargo fmt` (default rustfmt config) and `cargo clippy -D warnings` are
   CI blockers. Run both before opening a PR.
-- Use `anyhow::Result` at function boundaries; `thiserror` for internal
-  error types.
+- Use `anyhow::Result` at function boundaries. Add an internal error enum only
+  when it removes real ambiguity from callers.
 - Short doc comments (`///`) on public APIs only. Don't narrate internals.
 - No purely descriptive comments (this is enforced repo-wide via
   CLAUDE.md / AGENTS.md).
