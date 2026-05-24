@@ -169,7 +169,21 @@ fn snippet_line(
 }
 
 fn metadata_line(hit: &Hit, width: u16) -> Line<'static> {
-    let mut parts = vec![format_age_status(hit.mtime)];
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    metadata_line_for_terminal(hit, width, term_program.as_deref())
+}
+
+#[derive(Debug)]
+struct StatusPart {
+    text: String,
+    url: Option<String>,
+}
+
+fn metadata_line_for_terminal(hit: &Hit, width: u16, term_program: Option<&str>) -> Line<'static> {
+    let mut parts = vec![StatusPart {
+        text: format_age_status(hit.mtime),
+        url: None,
+    }];
 
     let tokens = hit
         .tokens_input
@@ -177,10 +191,10 @@ fn metadata_line(hit: &Hit, width: u16) -> Line<'static> {
         .saturating_add(hit.tokens_cache_read)
         .saturating_add(hit.tokens_cache_create);
     if tokens > 0 {
-        parts.push(format!(
-            "{} token",
-            crate::relative_time::format_count(tokens)
-        ));
+        parts.push(StatusPart {
+            text: format!("{} token", crate::relative_time::format_count(tokens)),
+            url: None,
+        });
     }
 
     if let Some(branch) = hit
@@ -188,19 +202,70 @@ fn metadata_line(hit: &Hit, width: u16) -> Line<'static> {
         .as_deref()
         .filter(|branch| !branch.is_empty())
     {
-        parts.push(branch.to_string());
+        parts.push(StatusPart {
+            text: branch.to_string(),
+            url: None,
+        });
     }
 
-    parts.push(short_project(&hit.cwd));
+    parts.push(StatusPart {
+        text: short_project(&hit.cwd),
+        url: None,
+    });
     if let Some(pr_number) = hit.pr_number {
-        parts.push(format!("PR #{pr_number}"));
+        parts.push(StatusPart {
+            text: format!("PR #{pr_number}"),
+            url: hit.pr_url.clone(),
+        });
     }
-    parts.push(hit.session_id.clone());
+    parts.push(StatusPart {
+        text: hit.session_id.clone(),
+        url: None,
+    });
 
-    Line::from(Span::styled(
-        truncate_to_width(&parts.join(" · "), width),
-        Style::default().fg(Color::DarkGray),
-    ))
+    let text = parts
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let truncated = truncate_to_width(&text, width);
+    if truncated != text || !supports_osc8_links(term_program) {
+        return Line::from(Span::styled(
+            truncated,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    let mut spans = Vec::new();
+    for (index, part) in parts.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        }
+
+        if let Some(url) = part.url.filter(|url| !url.is_empty()) {
+            spans.push(Span::styled(
+                osc8_link(&part.text, &url),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+        } else {
+            spans.push(Span::styled(
+                part.text,
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn supports_osc8_links(term_program: Option<&str>) -> bool {
+    term_program.is_some_and(|program| program.eq_ignore_ascii_case("ghostty"))
+}
+
+fn osc8_link(label: &str, url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
 fn format_age_status(mtime: i64) -> String {
@@ -574,6 +639,29 @@ mod tests {
                 "PR #2614",
                 "session-123"
             ]
+        );
+    }
+
+    #[test]
+    fn status_links_pr_on_ghostty() {
+        let mut hit = hit_with_scores(Scores::default());
+        hit.session_id = "session-123".to_string();
+        hit.cwd = "/repo/current".to_string();
+        hit.pr_number = Some(2614);
+        hit.pr_url = Some("https://github.com/owner/repo/pull/2614".to_string());
+
+        let line = metadata_line_for_terminal(&hit, 200, Some("ghostty"));
+
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            rendered.contains(
+                "\x1b]8;;https://github.com/owner/repo/pull/2614\x1b\\PR #2614\x1b]8;;\x1b\\"
+            ),
+            "{rendered:?}"
         );
     }
 
