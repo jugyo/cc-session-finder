@@ -16,7 +16,7 @@ mod tui;
 #[command(
     name = "cc-session-finder",
     version,
-    about = "Fast finder for Claude Code sessions"
+    about = "Fast finder for Claude Code and Codex sessions"
 )]
 struct Cli {
     #[command(subcommand)]

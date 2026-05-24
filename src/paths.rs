@@ -1,4 +1,4 @@
-//! cwd ↔ Claude project_dir encoding.
+//! Paths for source session stores and the local cache.
 
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,34 @@ pub fn claude_projects_root() -> PathBuf {
     let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     p.push(".claude");
     p.push("projects");
+    p
+}
+
+/// Root for Codex local state.
+pub fn codex_home() -> PathBuf {
+    let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    p.push(".codex");
+    p
+}
+
+/// Codex local state database.
+pub fn codex_state_db() -> PathBuf {
+    let mut p = codex_home();
+    p.push("state_5.sqlite");
+    p
+}
+
+/// Root for active Codex rollout transcripts.
+pub fn codex_sessions_root() -> PathBuf {
+    let mut p = codex_home();
+    p.push("sessions");
+    p
+}
+
+/// Root for archived Codex rollout transcripts.
+pub fn codex_archived_sessions_root() -> PathBuf {
+    let mut p = codex_home();
+    p.push("archived_sessions");
     p
 }
 

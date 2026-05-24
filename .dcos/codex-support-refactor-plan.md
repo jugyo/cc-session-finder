@@ -19,7 +19,7 @@ This plan should be completed before the Codex ingestion work if possible.
   discriminator.
 - `project_dir` means Claude's encoded cwd directory name.
 - `launch::resume` always execs `claude --resume <session_id>`.
-- TUI and CLI labels do not show which agent produced a result.
+- TUI and CLI output do not show which agent produced a result.
 
 These are manageable, but Codex support needs source identity in the DB and a
 resume dispatch point. Otherwise mixed Claude/Codex results can collide or
@@ -136,10 +136,9 @@ unambiguous.
    Claude uses `claude --resume <native_session_id>` and Codex uses
    `codex resume <native_session_id>`.
 
-7. Add source labels in shared presentation.
-   Show `[codex]` for Codex results. Claude can remain unlabeled or show
-   `[claude]`; the first implementation should choose the less noisy TUI
-   behavior and keep JSON explicit with `agent`.
+7. Add source identity in shared presentation.
+   Show the source agent without reintroducing generic result labels, and keep
+   JSON explicit with `agent`.
 
 8. Run verification:
    `cargo fmt --all`, `cargo test`, and
@@ -153,4 +152,3 @@ unambiguous.
 - A failed scan for one source does not wipe another source's cached rows.
 - All source transcript roots remain read-only.
 - Adding a third built-in agent is a local change, not a new architecture.
-

@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod codex;
 
 use std::path::PathBuf;
 
@@ -9,18 +10,21 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
+    Codex,
 }
 
 impl AgentKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::Codex => "codex",
         }
     }
 
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
             _ => None,
         }
     }
@@ -72,17 +76,19 @@ pub struct SourceMessage {
 }
 
 pub fn all_kinds() -> &'static [AgentKind] {
-    &[AgentKind::Claude]
+    &[AgentKind::Claude, AgentKind::Codex]
 }
 
 pub fn list_sessions(kind: AgentKind) -> Result<Vec<SourceRecord>> {
     match kind {
         AgentKind::Claude => claude::list_sessions(),
+        AgentKind::Codex => codex::list_sessions(),
     }
 }
 
 pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<SourceMessage>)> {
     match record.agent {
         AgentKind::Claude => claude::extract_session(record),
+        AgentKind::Codex => codex::extract_session(record),
     }
 }

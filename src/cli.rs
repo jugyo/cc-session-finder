@@ -161,10 +161,7 @@ fn write_results(
                 results: hits,
                 stats: OutputStats {
                     total_sessions,
-                    text_search_hits: hits
-                        .iter()
-                        .filter(|h| h.labels.iter().any(|l| l == "match"))
-                        .count(),
+                    text_search_hits: query.map(|_| hits.len()).unwrap_or(0),
                     took_ms: start.elapsed().as_millis(),
                 },
                 explain: explain.then_some(OutputExplain {
@@ -181,10 +178,9 @@ fn write_results(
             for h in hits {
                 writeln!(
                     out,
-                    "{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}",
                     h.session_id,
                     format_mtime(h.mtime),
-                    h.labels.join(","),
                     h.ai_title.as_deref().unwrap_or("")
                 )?;
             }

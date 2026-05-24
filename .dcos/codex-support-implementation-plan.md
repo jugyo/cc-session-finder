@@ -126,9 +126,8 @@ the conversation searchable.
 ## CLI/TUI Behavior
 
 - Default search/list should include all indexed agents.
-- Add an optional `--agent claude|codex|all` filter to `search`, `list`, and
-  `index` if it stays small. If that touches too much code, ship mixed search
-  first and add filtering as a follow-up.
+- Do not add an `--agent` filter in this implementation. Mixed search is the
+  product behavior for the first Codex-capable release.
 - `--format ids` should output the stable `session_id`, so Codex rows are
   unambiguous (`codex:<uuid>`).
 - `show` and `resume` should accept:
@@ -185,7 +184,6 @@ settings.
 
 - Dispatch `launch::resume` by agent.
 - Add agent marker/fields to TUI and JSON.
-- Add optional `--agent` filters if still low-risk.
 - Update README file layout, usage examples, and safety notes.
 
 ## Testing Plan
@@ -237,8 +235,8 @@ Use fixtures, not the user's real `~/.codex`.
   the DB/output.
 
 - Mixed results could surprise existing Claude-only users.
-  Mitigation: label Codex rows clearly and add `--agent` filtering if the code
-  impact is small.
+  Mitigation: show source identity clearly and keep JSON output explicit about
+  each result's `agent`.
 
 ## Done Definition
 
@@ -249,4 +247,3 @@ Use fixtures, not the user's real `~/.codex`.
 - Existing Claude workflows continue to behave as before.
 - No source session files or Codex/Claude databases are modified.
 - README documents both source layouts and the mixed-agent behavior.
-

@@ -1,15 +1,16 @@
 # cc-session-finder
 
-Fast full-text search for [Claude Code](https://claude.com/claude-code) sessions.
+Fast full-text search for [Claude Code](https://claude.com/claude-code) and
+Codex sessions.
 
-`claude --resume`'s built-in picker is a simple chronological list, which makes
-finding old sessions tedious. `cc-session-finder` indexes every JSONL session
-under `~/.claude/projects/` into SQLite and runs **FTS5 text search** from a
-TUI. Selecting a result execs `claude --resume <session-id>` in place.
+Native resume pickers are simple chronological lists, which makes finding old
+sessions tedious. `cc-session-finder` indexes local Claude Code and Codex
+sessions into SQLite and runs **FTS5 text search** from a TUI. Selecting a
+result execs the matching native resume command in place.
 
 - Incremental search in a TUI
 - Non-interactive CLI mode for AI agents / shells (JSON / TSV / IDs)
-- Sessions from the current `cwd` are boosted to the top
+- Optional `--cwd-only` filtering for the current project
 - Works with non-ASCII queries (FTS5 trigram tokenizer)
 
 ## Install
@@ -62,19 +63,14 @@ cc-session-finder graphql
 | -- | -- |
 | Text input / editing keys | Edit query at the cursor (IME / multi-byte safe) |
 | `↑` / `↓` or `Ctrl-P` / `Ctrl-N` | Move selection |
-| `Enter` | `chdir` to the session's `cwd` and exec `claude --resume` |
+| `Enter` | `chdir` to the session's `cwd` and exec the native resume command |
 | `Esc` / `Ctrl-C` | Cancel and exit |
 
-#### Result labels
+#### Agent Labels
 
-Labels are shown at the start of TUI result rows and are also included in CLI
-JSON / TSV output.
-
-| Label | Meaning |
-| -- | -- |
-| `[cwd]` | Session's `cwd` matches the current working directory |
-| `[match]` | Matched by FTS5 text search |
-| `[recent]` | Default label when the query is empty (newest-first) |
+The TUI shows a colored source label after each title, such as
+`title - Claude Code` or `title - Codex`. CLI JSON output also includes the
+`agent` field.
 
 ### CLI mode (for AI agents / scripts)
 
@@ -96,16 +92,23 @@ cc-session-finder search "auth" --format ids
 
 # Details of a single session
 cc-session-finder show 022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+cc-session-finder show codex:022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 # Resume directly without going through the TUI
 cc-session-finder resume 022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+cc-session-finder resume codex:022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 # Index maintenance
 cc-session-finder index
 cc-session-finder index --reindex --progress-json
 ```
 
-`--format` accepts `json` (default), `tsv`, or `ids`.
+`--format` accepts `json` (default), `tsv`, or `ids`. JSON output includes
+`agent` and `native_session_id`. `ids` outputs the stable ID used by the shared
+index, so Codex rows are prefixed like `codex:<uuid>`.
+
+`show` and `resume` accept stable IDs. Bare native IDs also work when they are
+unambiguous; Claude IDs remain unchanged for compatibility.
 
 #### Exit codes
 
@@ -134,6 +137,9 @@ the automatic update.
 | Path | Purpose |
 | -- | -- |
 | `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` | Raw sessions written by Claude Code (read-only) |
+| `~/.codex/state_5.sqlite` | Codex local thread metadata (read-only) |
+| `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex rollout transcripts (read-only) |
+| `~/.codex/archived_sessions/rollout-*.jsonl` | Older or archived Codex rollout transcripts (read-only) |
 | `~/.cache/cc-session-finder/index.db` | SQLite index (FTS5) |
 
 ## Logging

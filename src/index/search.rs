@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -30,7 +30,6 @@ pub struct Hit {
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_create: u64,
-    pub labels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,13 +136,7 @@ pub fn list(
         bound.push(Box::new(c));
     }
 
-    if cwd.is_some() && !cwd_only {
-        // ORDER BY (cwd = ?) — use a separate placeholder for the boost.
-        sql.push_str(" ORDER BY (cwd = ?) DESC, mtime DESC");
-        bound.push(Box::new(cwd_s.clone().unwrap_or_default()));
-    } else {
-        sql.push_str(" ORDER BY mtime DESC");
-    }
+    sql.push_str(" ORDER BY mtime DESC, session_id ASC");
     sql.push_str(" LIMIT ?");
     bound.push(Box::new(limit as i64));
 
@@ -154,7 +147,7 @@ pub fn list(
         .collect::<Result<_, _>>()?;
     attach_latest_message_snippets(conn, &mut rows)?;
 
-    Ok(annotate(rows, cwd_s.as_deref()))
+    Ok(rows)
 }
 
 fn attach_latest_message_snippets(conn: &Connection, hits: &mut [Hit]) -> Result<()> {
@@ -202,8 +195,7 @@ pub fn text_search(
     register_search_functions(conn)?;
 
     let mut hits_by_id: HashMap<String, Hit> = HashMap::new();
-    for mut hit in metadata_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
-        hit.labels.push("match".to_string());
+    for hit in metadata_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
         hits_by_id.insert(hit.session_id.clone(), hit);
     }
 
@@ -216,17 +208,15 @@ pub fn text_search(
                 hit.scores.freshness_boost = Some(message_hit.freshness_boost);
                 hit.scores.metadata_score = Some(0.0);
                 hit.scores.relevance_score = Some(0.0);
-                hit.labels.push("match".to_string());
                 hit
             });
         apply_message_score(entry, &message_hit);
     }
 
     let mut hits: Vec<Hit> = hits_by_id.into_values().collect();
-    let current_cwd = cwd_s.as_deref();
     hits.sort_by(|a, b| {
-        cwd_match_sort_order(a, b, current_cwd)
-            .then_with(|| b.mtime.cmp(&a.mtime))
+        b.mtime
+            .cmp(&a.mtime)
             .then_with(|| {
                 b.scores
                     .relevance_score
@@ -237,12 +227,7 @@ pub fn text_search(
     });
     hits.truncate(limit);
 
-    Ok(annotate(hits, cwd_s.as_deref()))
-}
-
-fn cwd_match_sort_order(a: &Hit, b: &Hit, cwd: Option<&str>) -> std::cmp::Ordering {
-    cwd.map(|cwd| (b.cwd == cwd).cmp(&(a.cwd == cwd)))
-        .unwrap_or(std::cmp::Ordering::Equal)
+    Ok(hits)
 }
 
 fn metadata_hits(
@@ -512,7 +497,6 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         tokens_output: r.get::<_, i64>(12).unwrap_or(0).max(0) as u64,
         tokens_cache_read: r.get::<_, i64>(13).unwrap_or(0).max(0) as u64,
         tokens_cache_create: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
-        labels: Vec::new(),
         snippet: None,
         snippet_role: None,
         snippet_message_count: None,
@@ -520,32 +504,27 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
     })
 }
 
-fn annotate(mut hits: Vec<Hit>, cwd: Option<&str>) -> Vec<Hit> {
-    for h in &mut hits {
-        if let Some(c) = cwd {
-            if c == h.cwd {
-                h.labels.insert(0, "cwd".to_string());
-            }
-        }
-        if h.agent != AgentKind::Claude {
-            h.labels.insert(0, h.agent.as_str().to_string());
-        }
-        if h.labels.is_empty() {
-            h.labels.push("recent".to_string());
-        }
-    }
-    hits
-}
-
 /// Fetch a single session by id.
 pub fn show(conn: &Connection, session_id: &str) -> Result<Option<Hit>> {
-    let sql = format!("SELECT {HIT_COLS} FROM sessions WHERE session_id = ?");
+    let sql = format!(
+        "SELECT {HIT_COLS}
+         FROM sessions
+         WHERE session_id = ?1 OR native_session_id = ?1
+         ORDER BY CASE WHEN session_id = ?1 THEN 0 ELSE 1 END, agent, session_id"
+    );
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![session_id])?;
-    if let Some(r) = rows.next()? {
-        return Ok(Some(map_hit(r)?));
+    let mut hits = Vec::new();
+    while let Some(r) = rows.next()? {
+        hits.push(map_hit(r)?);
     }
-    Ok(None)
+    if hits.is_empty() {
+        return Ok(None);
+    }
+    if hits[0].session_id == session_id || hits.len() == 1 {
+        return Ok(hits.into_iter().next());
+    }
+    bail!("ambiguous session id: {session_id}")
 }
 
 #[cfg(test)]
@@ -650,6 +629,21 @@ mod tests {
         .expect("insert message");
     }
 
+    fn insert_agent_session(
+        conn: &Connection,
+        session_id: &str,
+        agent: AgentKind,
+        native_session_id: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO sessions
+               (session_id, agent, native_session_id, cwd, mtime, size, file_path)
+             VALUES (?1, ?2, ?3, '/repo/current', 0, 0, '/f')",
+            params![session_id, agent.as_str(), native_session_id],
+        )
+        .expect("insert agent session");
+    }
+
     fn assert_close(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 1e-9,
@@ -676,6 +670,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(cols, ["ai_title", "first_prompt", "cwd"]);
+    }
+
+    #[test]
+    fn show_can_find_session_by_native_id() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, "codex:abc", AgentKind::Codex, "abc");
+
+        let hit = show(&conn, "abc").unwrap().expect("hit");
+
+        assert_eq!(hit.session_id, "codex:abc");
+        assert_eq!(hit.agent, AgentKind::Codex);
+        assert_eq!(hit.native_session_id, "abc");
     }
 
     #[test]
@@ -748,6 +754,31 @@ mod tests {
 
         assert_eq!(hit.snippet.as_deref(), Some("visible assistant text"));
         assert_eq!(hit.snippet_role.as_deref(), Some("assistant"));
+    }
+
+    #[test]
+    fn list_does_not_boost_current_cwd_before_newer_results() {
+        let conn = open_indexed_db();
+        insert_session_at(
+            &conn,
+            "current",
+            "/repo/current",
+            Some("current"),
+            None,
+            1_700_000_000,
+        );
+        insert_session_at(
+            &conn,
+            "other",
+            "/repo/other",
+            Some("other"),
+            None,
+            current_unix_secs(),
+        );
+
+        let hits = list(&conn, Some(Path::new("/repo/current")), false, None, 2).unwrap();
+
+        assert_eq!(hits.first().map(|h| h.session_id.as_str()), Some("other"));
     }
 
     #[test]
@@ -868,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn text_search_boosts_current_cwd_before_newer_results() {
+    fn text_search_does_not_boost_current_cwd_before_newer_results() {
         let conn = open_indexed_db();
         insert_session_at(
             &conn,
@@ -896,9 +927,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(hits.first().map(|h| h.session_id.as_str()), Some("current"));
-        let labels: Vec<&str> = hits[0].labels.iter().map(String::as_str).collect();
-        assert_eq!(labels, ["cwd", "match"]);
+        assert_eq!(hits.first().map(|h| h.session_id.as_str()), Some("other"));
     }
 
     #[test]

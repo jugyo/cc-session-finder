@@ -9,16 +9,16 @@ For the user-facing overview, installation, and usage, see
 
 ## What this project is
 
-A Rust TUI / CLI that indexes the JSONL sessions Claude Code writes under
-`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` into SQLite and runs
-FTS5 keyword search over them. Pressing Enter execs
-`claude --resume <session-id>`.
+A Rust TUI / CLI that indexes local Claude Code and Codex sessions into
+SQLite and runs FTS5 keyword search over them. Pressing Enter execs the
+matching native resume command, such as `claude --resume <session-id>` or
+`codex resume <session-id>`.
 
 ## Key constraints
 
-- **The JSONL files are read-only.** Writing under `~/.claude/projects/`
-  corrupts Claude Code's own sessions. Only write under our cache
-  (`~/.cache/cc-session-finder/`).
+- **Source session stores are read-only.** Writing under `~/.claude/` or
+  `~/.codex/` can corrupt the source agent's own state. Only write under our
+  cache (`~/.cache/cc-session-finder/`).
 - **TUI and CLI share the same DB.** SQLite is opened in WAL mode for
   concurrent reader / writer access.
 - **`--reset` is destructive.** Don't use it without explicit user
@@ -41,10 +41,14 @@ src/
 │   ├── schema.rs     # Migrations
 │   ├── ingest.rs     # Incremental scan + UPSERT
 │   └── search.rs     # FTS5 keyword queries
-├── session.rs        # JSONL parser → SessionRecord
-├── paths.rs          # cwd <-> project_dir encoding, cache root
+├── agent/
+│   ├── mod.rs        # Source abstraction and dispatch
+│   ├── claude.rs     # Claude Code source scanner
+│   └── codex.rs      # Codex source scanner
+├── session.rs        # Claude Code JSONL parser
+├── paths.rs          # source roots and cache paths
 ├── relative_time.rs  # "3h ago" style relative timestamps
-└── launch.rs         # execvp("claude", ["claude", "--resume", ...])
+└── launch.rs         # native resume command dispatch
 ```
 
 ## Development workflow
@@ -138,7 +142,7 @@ Agent-specific reminders:
 
 ## Things to avoid (footguns)
 
-- Writing to or deleting anything under `~/.claude/`
+- Writing to or deleting anything under `~/.claude/` or `~/.codex/`
 - Running `--reset` without confirming with the user
 - Running `cargo install` without confirming (it writes into the user's
   `~/.cargo/bin/`)

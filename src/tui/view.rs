@@ -9,10 +9,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::AppState;
+use crate::agent::AgentKind;
 use crate::index::search::Hit;
 
 const TRIGRAM_MIN_LEN: usize = 3;
 const RESULT_CURSOR_WIDTH: u16 = 2;
+const TITLE_MAX_WIDTH: u16 = 160;
 
 pub fn draw(f: &mut Frame, state: &AppState, tick: usize) {
     let area = f.area();
@@ -102,7 +104,7 @@ fn result_line_with_cursor(line: &Line<'static>, selected_first_line: bool) -> L
         spans.push(Span::raw("  "));
     }
     spans.extend(line.spans.iter().cloned().map(|mut span| {
-        if selected_first_line {
+        if selected_first_line && span.style.fg.is_none() {
             span.style = span.style.fg(Color::Cyan);
         }
         span
@@ -135,24 +137,45 @@ fn render_result_lines(
 
 fn title_line(hit: &Hit, width: u16) -> Line<'static> {
     let title = display_title(hit);
-    let label_prefix = labels_prefix(&hit.labels);
-    let title = if label_prefix.is_empty() {
-        title
-    } else {
-        format!("{label_prefix} {title}")
-    };
-    Line::from(Span::styled(
-        truncate_to_width(&title, width),
-        Style::default().add_modifier(Modifier::BOLD),
-    ))
+    let agent_label = agent_label(hit.agent);
+    let agent_label_style = agent_label_style(hit.agent);
+    let suffix_text = format!(" - {agent_label}");
+    let reserved = UnicodeWidthStr::width(suffix_text.as_str());
+    let title_width = usize::from(width)
+        .saturating_sub(reserved)
+        .min(usize::from(TITLE_MAX_WIDTH));
+
+    if title_width == 0 {
+        return Line::from(Span::styled(
+            truncate_to_width(agent_label, width),
+            agent_label_style,
+        ));
+    }
+
+    let spans = vec![
+        Span::styled(
+            truncate_to_width(&title, title_width as u16),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" - ", Style::default().fg(Color::DarkGray)),
+        Span::styled(agent_label, agent_label_style),
+    ];
+    Line::from(spans)
 }
 
-fn labels_prefix(labels: &[String]) -> String {
-    labels
-        .iter()
-        .map(|label| format!("[{label}]"))
-        .collect::<Vec<_>>()
-        .join("")
+fn agent_label(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex",
+    }
+}
+
+fn agent_label_style(agent: AgentKind) -> Style {
+    let color = match agent {
+        AgentKind::Claude => Color::Magenta,
+        AgentKind::Codex => Color::Green,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 fn snippet_line(hit: &Hit, width: u16, highlight_terms: &[String]) -> Line<'static> {
@@ -538,7 +561,6 @@ fn draw_status_bar(f: &mut Frame, area: Rect, state: &AppState, _tick: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentKind;
     use crate::index::search::Scores;
 
     fn hit_with_scores(scores: Scores) -> Hit {
@@ -561,7 +583,6 @@ mod tests {
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_create: 0,
-            labels: vec!["match".to_string()],
             snippet: None,
             snippet_role: None,
             snippet_message_count: None,
@@ -574,6 +595,13 @@ mod tests {
         hit.snippet = snippet.map(str::to_string);
         hit.snippet_role = role.map(str::to_string);
         hit
+    }
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     #[test]
@@ -608,24 +636,56 @@ mod tests {
         let lines = render_result_lines(&hit, 80, false, &[]);
 
         assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0].spans[0].content.as_ref(), "[match] title");
+        assert_eq!(line_text(&lines[0]), "title - Claude Code");
         assert_eq!(lines[1].spans[0].content.as_ref(), "before [needle] after");
         assert!(lines[2].spans[0].content.as_ref().contains("ago"));
         assert_eq!(lines[3].spans[0].content.as_ref(), "");
     }
 
     #[test]
-    fn title_line_renders_result_labels() {
+    fn title_line_renders_agent_label_after_title_with_agent_color() {
         let mut hit = hit_with_scores(Scores::default());
-        hit.labels = vec!["cwd".to_string(), "match".to_string()];
+        hit.agent = AgentKind::Codex;
 
         let lines = render_result_lines(&hit, 80, false, &[]);
 
-        assert_eq!(lines[0].spans[0].content.as_ref(), "[cwd][match] title");
+        assert_eq!(line_text(&lines[0]), "title - Codex");
+        let label = lines[0].spans.last().expect("agent label");
+        assert_eq!(label.content.as_ref(), "Codex");
+        assert_eq!(label.style.fg, Some(Color::Green));
     }
 
     #[test]
-    fn status_labels_age_and_tokens() {
+    fn title_line_truncates_long_title_by_display_width() {
+        let mut hit = hit_with_scores(Scores::default());
+        hit.ai_title = Some("長い".repeat(60));
+
+        let lines = render_result_lines(&hit, 200, false, &[]);
+
+        let title = lines[0].spans[0].content.as_ref();
+        assert!(UnicodeWidthStr::width(title) <= usize::from(TITLE_MAX_WIDTH));
+        assert!(title.ends_with('…'), "{title}");
+        assert_eq!(
+            lines[0].spans.last().unwrap().content.as_ref(),
+            "Claude Code"
+        );
+    }
+
+    #[test]
+    fn selected_title_keeps_agent_label_color() {
+        let mut hit = hit_with_scores(Scores::default());
+        hit.agent = AgentKind::Codex;
+        let line = title_line(&hit, 80);
+
+        let decorated = result_line_with_cursor(&line, true);
+
+        let label = decorated.spans.last().expect("agent label");
+        assert_eq!(label.content.as_ref(), "Codex");
+        assert_eq!(label.style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn status_line_age_and_tokens() {
         let mut hit = hit_with_scores(Scores::default());
         hit.session_id = "session-123".to_string();
         hit.cwd = "/Users/jugyo/workspace/bringout/seci-server".to_string();
@@ -718,7 +778,7 @@ mod tests {
         let terms = highlight_terms("title");
 
         let lines = render_result_lines(&hit, 80, false, &terms);
-        assert_eq!(lines[0].spans[0].content.as_ref(), "[match] title");
+        assert_eq!(line_text(&lines[0]), "title - Claude Code");
         assert_ne!(lines[0].spans[0].style.fg, Some(Color::Yellow));
     }
 

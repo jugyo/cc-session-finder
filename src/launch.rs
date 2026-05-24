@@ -21,6 +21,10 @@ pub(crate) fn resume_command(hit: &Hit) -> ResumeCommand {
             program: "claude",
             args: vec!["--resume".to_string(), hit.native_session_id.clone()],
         },
+        AgentKind::Codex => ResumeCommand {
+            program: "codex",
+            args: vec!["resume".to_string(), hit.native_session_id.clone()],
+        },
     }
 }
 
@@ -65,7 +69,6 @@ mod tests {
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_create: 0,
-            labels: Vec::new(),
             snippet: None,
             snippet_role: None,
             snippet_message_count: None,
@@ -80,6 +83,17 @@ mod tests {
             ResumeCommand {
                 program: "claude",
                 args: vec!["--resume".to_string(), "native-123".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn codex_resume_command_uses_native_session_id() {
+        assert_eq!(
+            resume_command(&hit(AgentKind::Codex, "native-123")),
+            ResumeCommand {
+                program: "codex",
+                args: vec!["resume".to_string(), "native-123".to_string()],
             }
         );
     }
