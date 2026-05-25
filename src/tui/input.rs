@@ -57,6 +57,12 @@ impl QueryEditor {
             self.cursor += 1;
         }
     }
+    pub fn move_word_left(&mut self) {
+        self.cursor = previous_word_start(&self.graphemes, self.cursor);
+    }
+    pub fn move_word_right(&mut self) {
+        self.cursor = next_word_end(&self.graphemes, self.cursor);
+    }
     pub fn move_home(&mut self) {
         self.cursor = 0;
     }
@@ -94,13 +100,7 @@ impl QueryEditor {
 
     /// Kill the previous whitespace-delimited word (Emacs/readline C-w).
     pub fn kill_word_backward(&mut self) {
-        let mut i = self.cursor;
-        while i > 0 && is_whitespace_grapheme(&self.graphemes[i - 1]) {
-            i -= 1;
-        }
-        while i > 0 && !is_whitespace_grapheme(&self.graphemes[i - 1]) {
-            i -= 1;
-        }
+        let i = previous_word_start(&self.graphemes, self.cursor);
         if i < self.cursor {
             self.graphemes.drain(i..self.cursor);
             self.cursor = i;
@@ -133,4 +133,72 @@ impl QueryEditor {
 
 fn is_whitespace_grapheme(g: &str) -> bool {
     g.chars().all(char::is_whitespace)
+}
+
+fn previous_word_start(graphemes: &[String], cursor: usize) -> usize {
+    let mut i = cursor;
+    while i > 0 && is_whitespace_grapheme(&graphemes[i - 1]) {
+        i -= 1;
+    }
+    while i > 0 && !is_whitespace_grapheme(&graphemes[i - 1]) {
+        i -= 1;
+    }
+    i
+}
+
+fn next_word_end(graphemes: &[String], cursor: usize) -> usize {
+    let mut i = cursor;
+    while i < graphemes.len() && is_whitespace_grapheme(&graphemes[i]) {
+        i += 1;
+    }
+    while i < graphemes.len() && !is_whitespace_grapheme(&graphemes[i]) {
+        i += 1;
+    }
+    i
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_left_moves_to_previous_word_start() {
+        let mut editor = QueryEditor::with_initial("alpha beta  gamma".to_string());
+
+        editor.move_word_left();
+        assert_eq!(editor.cursor_col(), 12);
+
+        editor.move_word_left();
+        assert_eq!(editor.cursor_col(), 6);
+
+        editor.move_word_left();
+        assert_eq!(editor.cursor_col(), 0);
+
+        editor.move_word_left();
+        assert_eq!(editor.cursor_col(), 0);
+    }
+
+    #[test]
+    fn word_right_moves_to_next_word_end() {
+        let mut editor = QueryEditor::with_initial("  alpha beta".to_string());
+        editor.move_home();
+
+        editor.move_word_right();
+        assert_eq!(editor.cursor_col(), 7);
+
+        editor.move_word_right();
+        assert_eq!(editor.cursor_col(), 12);
+
+        editor.move_word_right();
+        assert_eq!(editor.cursor_col(), 12);
+    }
+
+    #[test]
+    fn kill_word_backward_matches_word_left_boundary() {
+        let mut editor = QueryEditor::with_initial("alpha beta  gamma".to_string());
+
+        editor.kill_word_backward();
+        assert_eq!(editor.query(), "alpha beta  ");
+        assert_eq!(editor.cursor_col(), 12);
+    }
 }

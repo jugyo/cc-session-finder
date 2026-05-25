@@ -57,6 +57,10 @@ cc-session-finder graphql
 | Key | Action |
 | -- | -- |
 | Text input / editing keys | Edit query at the cursor (IME / multi-byte safe) |
+| `Option-←` / `Option-→` (`Alt-←` / `Alt-→`) | Move the query cursor by word |
+| `Option-Backspace` (`Alt-Backspace`) | Delete the previous word |
+| `Ctrl-A` / `Ctrl-E` | Move the query cursor to start / end |
+| `Ctrl-W` | Delete the previous word |
 | `↑` / `↓` or `Ctrl-P` / `Ctrl-N` | Move selection |
 | `Enter` | Resume the selected session |
 | `Esc` / `Ctrl-C` | Cancel and exit |

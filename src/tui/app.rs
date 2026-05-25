@@ -244,6 +244,32 @@ fn handle_editor_key(state: &mut AppState, k: KeyEvent) -> Option<String> {
         return None;
     }
 
+    if k.modifiers.contains(KeyModifiers::ALT) {
+        match k.code {
+            KeyCode::Left => {
+                state.editor.move_word_left();
+                return None;
+            }
+            KeyCode::Right => {
+                state.editor.move_word_right();
+                return None;
+            }
+            KeyCode::Char('b') => {
+                state.editor.move_word_left();
+                return None;
+            }
+            KeyCode::Char('f') => {
+                state.editor.move_word_right();
+                return None;
+            }
+            KeyCode::Backspace => {
+                state.editor.kill_word_backward();
+                return Some(state.editor.query().to_string());
+            }
+            _ => return None,
+        }
+    }
+
     match k.code {
         KeyCode::Char(c) => {
             state.editor.insert(c);
@@ -327,5 +353,59 @@ mod tests {
         assert_eq!(pending_query, None);
         assert_eq!(state.editor.query(), "abcd");
         assert_eq!(state.editor.cursor_col(), cursor_col);
+    }
+
+    #[test]
+    fn alt_arrows_move_query_cursor_by_word() {
+        let mut state = AppState::new(Some("alpha beta gamma".to_string()), false);
+
+        assert_eq!(
+            handle_editor_key(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(state.editor.cursor_col(), 11);
+
+        assert_eq!(
+            handle_editor_key(&mut state, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(state.editor.cursor_col(), 16);
+    }
+
+    #[test]
+    fn alt_b_and_f_move_query_cursor_by_word() {
+        let mut state = AppState::new(Some("alpha beta gamma".to_string()), false);
+
+        assert_eq!(
+            handle_editor_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)
+            ),
+            None
+        );
+        assert_eq!(state.editor.cursor_col(), 11);
+
+        assert_eq!(
+            handle_editor_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)
+            ),
+            None
+        );
+        assert_eq!(state.editor.cursor_col(), 16);
+    }
+
+    #[test]
+    fn alt_backspace_deletes_previous_word() {
+        let mut state = AppState::new(Some("alpha beta  gamma".to_string()), false);
+
+        assert_eq!(
+            handle_editor_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)
+            ),
+            Some("alpha beta  ".to_string())
+        );
+        assert_eq!(state.editor.cursor_col(), 12);
     }
 }
