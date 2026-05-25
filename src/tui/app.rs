@@ -32,9 +32,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new(initial_query: Option<String>, explain: bool) -> Self {
+    fn new(explain: bool) -> Self {
         Self {
-            editor: QueryEditor::with_initial(initial_query.unwrap_or_default()),
+            editor: QueryEditor::with_initial(String::new()),
             results: Vec::new(),
             selected: 0,
             cwd: std::env::current_dir().ok(),
@@ -44,7 +44,7 @@ impl AppState {
     }
 }
 
-pub fn run(initial_query: Option<String>, explain: bool) -> Result<ExitCode> {
+pub fn run(explain: bool) -> Result<ExitCode> {
     // Set up terminal.
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -52,7 +52,7 @@ pub fn run(initial_query: Option<String>, explain: bool) -> Result<ExitCode> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let exit_code = run_loop(&mut terminal, initial_query, explain);
+    let exit_code = run_loop(&mut terminal, explain);
 
     // Tear down.
     disable_raw_mode()?;
@@ -63,11 +63,7 @@ pub fn run(initial_query: Option<String>, explain: bool) -> Result<ExitCode> {
     Ok(code)
 }
 
-fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    initial_query: Option<String>,
-    explain: bool,
-) -> Result<ExitCode> {
+fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, explain: bool) -> Result<ExitCode> {
     let (tx, rx) = std_mpsc::channel::<Event>();
 
     let conn = index::open()?;
@@ -91,7 +87,7 @@ fn run_loop(
         });
     }
 
-    let mut state = AppState::new(initial_query, explain);
+    let mut state = AppState::new(explain);
 
     // Initial query: list newest (using whatever is already in the DB).
     refresh_results(&conn, &mut state)?;
@@ -332,6 +328,12 @@ fn refresh_pending_query_if_ready(
 mod tests {
     use super::*;
 
+    fn state_with_query(query: &str) -> AppState {
+        let mut state = AppState::new(false);
+        state.editor = QueryEditor::with_initial(query.to_string());
+        state
+    }
+
     fn open_indexed_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
         crate::index::schema::ensure(&conn).expect("schema");
@@ -341,7 +343,7 @@ mod tests {
     #[test]
     fn debounced_search_preserves_query_cursor() {
         let conn = open_indexed_db();
-        let mut state = AppState::new(Some("abcd".to_string()), false);
+        let mut state = state_with_query("abcd");
         state.editor.move_left();
         state.editor.move_left();
         let cursor_col = state.editor.cursor_col();
@@ -357,7 +359,7 @@ mod tests {
 
     #[test]
     fn alt_arrows_move_query_cursor_by_word() {
-        let mut state = AppState::new(Some("alpha beta gamma".to_string()), false);
+        let mut state = state_with_query("alpha beta gamma");
 
         assert_eq!(
             handle_editor_key(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
@@ -374,7 +376,7 @@ mod tests {
 
     #[test]
     fn alt_b_and_f_move_query_cursor_by_word() {
-        let mut state = AppState::new(Some("alpha beta gamma".to_string()), false);
+        let mut state = state_with_query("alpha beta gamma");
 
         assert_eq!(
             handle_editor_key(
@@ -397,7 +399,7 @@ mod tests {
 
     #[test]
     fn alt_backspace_deletes_previous_word() {
-        let mut state = AppState::new(Some("alpha beta  gamma".to_string()), false);
+        let mut state = state_with_query("alpha beta  gamma");
 
         assert_eq!(
             handle_editor_key(

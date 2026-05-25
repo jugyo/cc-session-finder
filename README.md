@@ -51,8 +51,9 @@ mv cc-session-finder /usr/local/bin/
 
 ```sh
 cc-session-finder
-cc-session-finder graphql
 ```
+
+Type in the TUI to filter sessions incrementally.
 
 | Key | Action |
 | -- | -- |

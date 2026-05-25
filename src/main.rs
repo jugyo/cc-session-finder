@@ -22,9 +22,6 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
 
-    /// Optional initial query (TUI mode only)
-    query: Option<String>,
-
     /// Force a full reindex before starting
     #[arg(long, global = true)]
     reindex: bool,
@@ -143,7 +140,7 @@ fn main() -> ExitCode {
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         None => {
             if atty::is(atty::Stream::Stdout) {
-                tui::run(cli.query, cli.reindex, cli.explain)
+                tui::run(cli.reindex, cli.explain)
             } else {
                 // Non-TTY without subcommand → behave like `list --format json`
                 cli::run_list(
@@ -215,4 +212,47 @@ fn init_tracing() {
         )
         .with_writer(std::io::stderr)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn bare_query_is_not_accepted() {
+        assert!(Cli::try_parse_from(["cc-session-finder", "foo"]).is_err());
+    }
+
+    #[test]
+    fn search_subcommand_still_accepts_query() {
+        let cli = Cli::try_parse_from(["cc-session-finder", "search", "foo"]).unwrap();
+
+        match cli.command {
+            Some(Cmd::Search(args)) => assert_eq!(args.query, "foo"),
+            other => panic!("expected search command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommands_keep_their_positional_contracts() {
+        assert!(Cli::try_parse_from(["cc-session-finder", "list", "foo"]).is_err());
+        assert!(Cli::try_parse_from(["cc-session-finder", "index", "foo"]).is_err());
+        assert!(Cli::try_parse_from(["cc-session-finder", "search"]).is_err());
+        assert!(Cli::try_parse_from(["cc-session-finder", "search", "foo", "bar"]).is_err());
+        assert!(Cli::try_parse_from(["cc-session-finder", "show"]).is_err());
+        assert!(Cli::try_parse_from(["cc-session-finder", "resume"]).is_err());
+
+        let cli = Cli::try_parse_from(["cc-session-finder", "show", "session-1"]).unwrap();
+        match cli.command {
+            Some(Cmd::Show(args)) => assert_eq!(args.session_id, "session-1"),
+            other => panic!("expected show command, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["cc-session-finder", "resume", "session-1"]).unwrap();
+        match cli.command {
+            Some(Cmd::Resume(args)) => assert_eq!(args.session_id, "session-1"),
+            other => panic!("expected resume command, got {other:?}"),
+        }
+    }
 }
