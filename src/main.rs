@@ -64,6 +64,12 @@ struct SearchArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     cwd_only: bool,
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
+    since: Option<String>,
+    /// Upper mtime bound, e.g. "1d", "2026-05-25", or RFC3339
+    #[arg(long, visible_alias = "to")]
+    until: Option<String>,
     #[arg(long, value_enum, default_value_t = Format::Json)]
     format: Format,
     #[arg(long)]
@@ -78,9 +84,12 @@ struct ListArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     cwd_only: bool,
-    /// Duration filter, e.g. "7d" or "24h"
-    #[arg(long)]
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
     since: Option<String>,
+    /// Upper mtime bound, e.g. "1d", "2026-05-25", or RFC3339
+    #[arg(long, visible_alias = "to")]
+    until: Option<String>,
     #[arg(long, value_enum, default_value_t = Format::Json)]
     format: Format,
     #[arg(long)]
@@ -143,6 +152,7 @@ fn main() -> ExitCode {
                         cwd: None,
                         cwd_only: false,
                         since: None,
+                        until: None,
                         format: Format::Json,
                         no_update: false,
                     },

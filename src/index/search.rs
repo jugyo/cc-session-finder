@@ -10,6 +10,12 @@ use serde::Serialize;
 
 use crate::agent::AgentKind;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TimeRange {
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub session_id: String,
@@ -110,14 +116,21 @@ pub fn list(
     since_secs: Option<i64>,
     limit: usize,
 ) -> Result<Vec<Hit>> {
+    let time_range = TimeRange {
+        since: since_secs.map(|s| current_unix_secs() - s),
+        until: None,
+    };
+    list_with_time_range(conn, cwd, cwd_only, time_range, limit)
+}
+
+pub fn list_with_time_range(
+    conn: &Connection,
+    cwd: Option<&Path>,
+    cwd_only: bool,
+    time_range: TimeRange,
+    limit: usize,
+) -> Result<Vec<Hit>> {
     let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
-    let cutoff = since_secs.map(|s| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now - s
-    });
 
     let mut sql = format!(
         "SELECT {HIT_COLS}
@@ -131,10 +144,7 @@ pub fn list(
             bound.push(Box::new(cw.clone()));
         }
     }
-    if let Some(c) = cutoff {
-        sql.push_str(" AND mtime >= ?");
-        bound.push(Box::new(c));
-    }
+    push_time_range_filter(&mut sql, &mut bound, "mtime", time_range);
 
     sql.push_str(" ORDER BY mtime DESC, session_id ASC");
     sql.push_str(" LIMIT ?");
@@ -148,6 +158,26 @@ pub fn list(
     attach_latest_message_snippets(conn, &mut rows)?;
 
     Ok(rows)
+}
+
+fn push_time_range_filter(
+    sql: &mut String,
+    bound: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    column: &str,
+    time_range: TimeRange,
+) {
+    if let Some(since) = time_range.since {
+        sql.push_str(" AND ");
+        sql.push_str(column);
+        sql.push_str(" >= ?");
+        bound.push(Box::new(since));
+    }
+    if let Some(until) = time_range.until {
+        sql.push_str(" AND ");
+        sql.push_str(column);
+        sql.push_str(" <= ?");
+        bound.push(Box::new(until));
+    }
 }
 
 fn attach_latest_message_snippets(conn: &Connection, hits: &mut [Hit]) -> Result<()> {
@@ -186,6 +216,17 @@ pub fn text_search(
     cwd_only: bool,
     limit: usize,
 ) -> Result<Vec<Hit>> {
+    text_search_with_time_range(conn, query, cwd, cwd_only, TimeRange::default(), limit)
+}
+
+pub fn text_search_with_time_range(
+    conn: &Connection,
+    query: &str,
+    cwd: Option<&Path>,
+    cwd_only: bool,
+    time_range: TimeRange,
+    limit: usize,
+) -> Result<Vec<Hit>> {
     let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
     let q = build_fts_query(query);
     if q.is_empty() {
@@ -195,11 +236,11 @@ pub fn text_search(
     register_search_functions(conn)?;
 
     let mut hits_by_id: HashMap<String, Hit> = HashMap::new();
-    for hit in metadata_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
+    for hit in metadata_hits(conn, &q, cwd_s.as_deref(), cwd_only, time_range)? {
         hits_by_id.insert(hit.session_id.clone(), hit);
     }
 
-    for message_hit in message_hits(conn, &q, cwd_s.as_deref(), cwd_only)? {
+    for message_hit in message_hits(conn, &q, cwd_s.as_deref(), cwd_only, time_range)? {
         let entry = hits_by_id
             .entry(message_hit.hit.session_id.clone())
             .or_insert_with(|| {
@@ -235,6 +276,7 @@ fn metadata_hits(
     q: &str,
     cwd: Option<&str>,
     cwd_only: bool,
+    time_range: TimeRange,
 ) -> Result<Vec<Hit>> {
     let mut sql = "WITH ranked AS (
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
@@ -243,11 +285,14 @@ fn metadata_hits(
                     s.agent, s.native_session_id, s.source_group,
                     bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
              FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
-             WHERE sessions_fts MATCH ?1"
+             WHERE sessions_fts MATCH ?"
         .to_string();
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(q.to_string())];
     if cwd_only {
-        sql.push_str(" AND s.cwd = ?2");
+        sql.push_str(" AND s.cwd = ?");
+        bound.push(Box::new(cwd.unwrap_or("").to_string()));
     }
+    push_time_range_filter(&mut sql, &mut bound, "s.mtime", time_range);
     sql.push_str(&format!(
         "
          ),
@@ -274,13 +319,10 @@ fn metadata_hits(
     ));
 
     let mut stmt = conn.prepare(&sql)?;
+    let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
 
     let mut hits: Vec<Hit> = Vec::new();
-    let mut rows = if cwd_only {
-        stmt.query(params![q, cwd.unwrap_or("")])?
-    } else {
-        stmt.query(params![q])?
-    };
+    let mut rows = stmt.query(params_iter.as_slice())?;
     while let Some(r) = rows.next()? {
         let mut h = map_hit(r)?;
         let final_score = r.get(COL_FINAL_SCORE).unwrap_or(0.0);
@@ -312,6 +354,7 @@ fn message_hits(
     q: &str,
     cwd: Option<&str>,
     cwd_only: bool,
+    time_range: TimeRange,
 ) -> Result<Vec<MessageHit>> {
     let mut sql = "WITH scored AS (
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
@@ -326,11 +369,14 @@ fn message_hits(
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              JOIN sessions s ON s.session_id = m.session_id
-             WHERE messages_fts MATCH ?1"
+             WHERE messages_fts MATCH ?"
         .to_string();
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(q.to_string())];
     if cwd_only {
-        sql.push_str(" AND s.cwd = ?2");
+        sql.push_str(" AND s.cwd = ?");
+        bound.push(Box::new(cwd.unwrap_or("").to_string()));
     }
+    push_time_range_filter(&mut sql, &mut bound, "s.mtime", time_range);
     sql.push_str(&format!(
         "
          )
@@ -344,11 +390,8 @@ fn message_hits(
     ));
 
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = if cwd_only {
-        stmt.query(params![q, cwd.unwrap_or("")])?
-    } else {
-        stmt.query(params![q])?
-    };
+    let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+    let mut rows = stmt.query(params_iter.as_slice())?;
 
     let mut hits_by_id: HashMap<String, MessageHit> = HashMap::new();
     while let Some(r) = rows.next()? {
@@ -757,6 +800,29 @@ mod tests {
     }
 
     #[test]
+    fn list_filters_by_time_range() {
+        let conn = open_indexed_db();
+        insert_session_at(&conn, "old", "/repo/current", Some("old"), None, 100);
+        insert_session_at(&conn, "middle", "/repo/current", Some("middle"), None, 200);
+        insert_session_at(&conn, "new", "/repo/current", Some("new"), None, 300);
+
+        let hits = list_with_time_range(
+            &conn,
+            None,
+            false,
+            TimeRange {
+                since: Some(150),
+                until: Some(250),
+            },
+            10,
+        )
+        .unwrap();
+
+        let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(ids, ["middle"]);
+    }
+
+    #[test]
     fn list_does_not_boost_current_cwd_before_newer_results() {
         let conn = open_indexed_db();
         insert_session_at(
@@ -986,6 +1052,39 @@ mod tests {
                     .expect("weighted message score"),
             ),
         );
+    }
+
+    #[test]
+    fn text_search_filters_metadata_and_messages_by_time_range() {
+        let conn = open_indexed_db();
+        insert_session_at(&conn, "old", "/repo/current", None, Some("timerange"), 100);
+        insert_session_at(
+            &conn,
+            "middle",
+            "/repo/current",
+            None,
+            Some("timerange"),
+            200,
+        );
+        insert_session_at(&conn, "new", "/repo/current", None, Some("timerange"), 300);
+        insert_session_at(&conn, "body", "/repo/current", Some("other"), None, 220);
+        insert_message(&conn, "body", 0, "user", "timerange appears in the body");
+
+        let hits = text_search_with_time_range(
+            &conn,
+            "timerange",
+            None,
+            false,
+            TimeRange {
+                since: Some(150),
+                until: Some(250),
+            },
+            10,
+        )
+        .unwrap();
+
+        let ids: Vec<_> = hits.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(ids, ["body", "middle"]);
     }
 
     #[test]

@@ -80,12 +80,14 @@ TTY. The default output format is JSON.
 ```sh
 # Keyword search
 cc-session-finder search "graphql migration" --limit 10
+cc-session-finder search "graphql migration" --since 7d --until 1d
 
 # Include ranking details in JSON output
 cc-session-finder --explain search "graphql migration" --limit 10
 
 # Newest-first listing
 cc-session-finder list --limit 50 --since 7d
+cc-session-finder list --from 2026-05-01 --to 2026-05-25
 
 # Just the session IDs (for xargs piping)
 cc-session-finder search "auth" --format ids
@@ -106,6 +108,10 @@ cc-session-finder index --reindex --progress-json
 `--format` accepts `json` (default), `tsv`, or `ids`. JSON output includes
 `agent` and `native_session_id`. `ids` outputs the stable ID used by the shared
 index, so Codex rows are prefixed like `codex:<uuid>`.
+
+`search` and `list` both accept `--since` / `--until` time filters. `--from`
+and `--to` are aliases. Values can be relative durations (`7d`, `24h`, `30m`),
+`YYYY-MM-DD`, RFC3339 timestamps, or Unix timestamps.
 
 `show` and `resume` accept stable IDs. Bare native IDs also work when they are
 unambiguous; Claude IDs remain unchanged for compatibility.

@@ -4,12 +4,12 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::index;
 use crate::index::ingest::{IngestStats, Progress};
-use crate::index::search::Hit;
+use crate::index::search::{Hit, TimeRange};
 use crate::{Format, IndexArgs, ListArgs, ResumeArgs, SearchArgs, ShowArgs};
 
 #[derive(Serialize)]
@@ -56,8 +56,14 @@ pub fn run_list(args: ListArgs, reindex: bool, explain: bool) -> Result<ExitCode
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
-    let since_secs = args.since.as_deref().and_then(parse_duration);
-    let hits = index::search::list(&conn, cwd.as_deref(), args.cwd_only, since_secs, args.limit)?;
+    let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
+    let hits = index::search::list_with_time_range(
+        &conn,
+        cwd.as_deref(),
+        args.cwd_only,
+        time_range,
+        args.limit,
+    )?;
     write_results(
         &hits,
         None,
@@ -74,12 +80,14 @@ pub fn run_search(args: SearchArgs, reindex: bool, explain: bool) -> Result<Exit
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
     let cwd = args.cwd.or_else(default_cwd);
+    let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
 
-    let hits = index::search::text_search(
+    let hits = index::search::text_search_with_time_range(
         &conn,
         &args.query,
         cwd.as_deref(),
         args.cwd_only,
+        time_range,
         args.limit,
     )?;
 
@@ -218,6 +226,101 @@ fn parse_duration(s: &str) -> Option<i64> {
         _ => return None,
     };
     Some(n * mult)
+}
+
+fn parse_time_range(since: Option<&str>, until: Option<&str>) -> Result<TimeRange> {
+    parse_time_range_at(since, until, current_unix_secs())
+}
+
+fn parse_time_range_at(since: Option<&str>, until: Option<&str>, now: i64) -> Result<TimeRange> {
+    let range = TimeRange {
+        since: since
+            .map(|value| parse_time_bound(value, now, false))
+            .transpose()?,
+        until: until
+            .map(|value| parse_time_bound(value, now, true))
+            .transpose()?,
+    };
+    if let (Some(since), Some(until)) = (range.since, range.until) {
+        if since > until {
+            bail!("invalid time range: --since is later than --until");
+        }
+    }
+    Ok(range)
+}
+
+fn parse_time_bound(value: &str, now: i64, end_of_day: bool) -> Result<i64> {
+    let value = value.trim();
+    if let Some(seconds) = parse_duration(value) {
+        return Ok(now - seconds);
+    }
+    if let Ok(timestamp) = value.parse::<i64>() {
+        return Ok(timestamp);
+    }
+    if let Ok(datetime) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    {
+        return Ok(datetime.unix_timestamp());
+    }
+
+    let date_format = time::macros::format_description!("[year]-[month]-[day]");
+    if let Ok(date) = time::Date::parse(value, date_format) {
+        let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+        let start = date.midnight().assume_offset(offset).unix_timestamp();
+        if end_of_day {
+            let next = date.next_day().unwrap_or(date).midnight();
+            return Ok(next
+                .assume_offset(offset)
+                .unix_timestamp()
+                .saturating_sub(1));
+        }
+        return Ok(start);
+    }
+
+    bail!(
+        "invalid time value {value:?}; use a duration like 7d/24h, YYYY-MM-DD, RFC3339, or a Unix timestamp"
+    )
+}
+
+fn current_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_relative_time_range() {
+        let now = 1_000_000;
+        let range = parse_time_range_at(Some("7d"), Some("1d"), now).unwrap();
+
+        assert_eq!(range.since, Some(now - 7 * 86_400));
+        assert_eq!(range.until, Some(now - 86_400));
+    }
+
+    #[test]
+    fn parses_rfc3339_time_range() {
+        let range = parse_time_range_at(
+            Some("1970-01-02T00:00:00Z"),
+            Some("1970-01-03T00:00:00Z"),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(range.since, Some(86_400));
+        assert_eq!(range.until, Some(2 * 86_400));
+    }
+
+    #[test]
+    fn rejects_inverted_time_range() {
+        let err = parse_time_range_at(Some("1d"), Some("7d"), 1_000_000).unwrap_err();
+
+        assert!(err.to_string().contains("--since is later than --until"));
+    }
 }
 
 #[derive(Default)]
