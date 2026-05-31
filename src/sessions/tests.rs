@@ -282,6 +282,24 @@ fn agent_kind_serializes_lowercase() {
 }
 
 #[test]
+fn generated_schema_has_no_integer_width_format() {
+    // The whole output tree (SearchResponse -> SessionCard -> SessionMessage /
+    // SessionMetadata) must not carry schemars' non-standard `uint*`/`int*`
+    // formats, which MCP clients only warn about. Guards against forgetting the
+    // `strip_int_formats` transform on a newly added integer field.
+    let schema = schemars::schema_for!(SearchResponse);
+    let json = serde_json::to_string(&schema).unwrap();
+    assert!(
+        !json.contains("\"format\":\"uint"),
+        "unsigned width format leaked into schema: {json}"
+    );
+    assert!(
+        !json.contains("\"format\":\"int"),
+        "signed width format leaked into schema: {json}"
+    );
+}
+
+#[test]
 fn paged_messages_skip_internal_marker_text() {
     let conn = setup();
     insert_session(&conn, "guarded", "claude", 1, None, None, None);

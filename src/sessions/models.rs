@@ -9,6 +9,33 @@ use serde::Serialize;
 use crate::agent::AgentKind;
 use crate::index::search::Hit;
 
+/// Drop non-standard integer-width `format` annotations (e.g. `uint32`,
+/// `int64`) that schemars emits from Rust integer types. JSON has no integer
+/// width, so the annotation is meaningless on the wire and only makes MCP
+/// clients warn about an unknown `format`. Applied as a schemars container
+/// transform to types with integer fields.
+pub(crate) fn strip_int_formats(schema: &mut schemars::Schema) {
+    let Some(properties) = schema
+        .as_object_mut()
+        .and_then(|object| object.get_mut("properties"))
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for value in properties.values_mut() {
+        let Some(field) = value.as_object_mut() else {
+            continue;
+        };
+        let is_width_format = field
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|format| format.starts_with("int") || format.starts_with("uint"));
+        if is_width_format {
+            field.remove("format");
+        }
+    }
+}
+
 /// Default and capped limits. Character caps are fixed internally and not
 /// exposed as knobs.
 pub const SEARCH_LIMIT_DEFAULT: usize = 20;
@@ -34,6 +61,7 @@ pub(crate) const FULL_MESSAGE_CAP: usize = MESSAGES_TEXT_CAP;
 /// A single visible user/assistant message. `message_index` maps to the DB
 /// `turn_index` column.
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[schemars(transform = strip_int_formats)]
 pub struct SessionMessage {
     pub message_index: u32,
     pub role: String,
@@ -54,6 +82,7 @@ impl SessionMessage {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
 pub struct SessionMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
@@ -86,6 +115,7 @@ pub struct SessionCard {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
 pub struct SearchResponse {
     pub results: Vec<SessionCard>,
     pub count: usize,
@@ -114,6 +144,7 @@ pub struct OverviewSession {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
 pub struct OverviewResponse {
     pub session: OverviewSession,
     pub first_message: Option<SessionMessage>,
@@ -130,6 +161,7 @@ pub struct MessagesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
 pub struct MessageSearchResponse {
     pub session: SessionRef,
     pub matches: Vec<SessionMessage>,

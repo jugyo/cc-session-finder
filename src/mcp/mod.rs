@@ -20,6 +20,7 @@ use crate::sessions::{
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
 struct SearchSessionsInput {
     /// Search query. Omit or leave empty to list recent sessions.
     #[serde(default)]
@@ -48,6 +49,7 @@ struct GetSessionOverviewInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
 struct GetSessionMessagesInput {
     /// Opaque session id.
     id: String,
@@ -66,6 +68,7 @@ struct GetSessionMessagesInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
 struct SearchSessionMessagesInput {
     /// Opaque session id.
     id: String,
