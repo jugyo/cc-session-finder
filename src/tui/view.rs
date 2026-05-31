@@ -693,9 +693,12 @@ mod tests {
         hit.pr_number = Some(2614);
         hit.tokens_input = 79_400;
 
-        let lines = render_result_lines(&hit, 200, false, &[]);
+        // Use an explicit non-OSC8 terminal so the status renders as a single
+        // span; render_result_lines would otherwise read the ambient
+        // TERM_PROGRAM and split the line into per-part spans under e.g. ghostty.
+        let line = metadata_line_for_terminal(&hit, 200, None);
 
-        let status = lines[2].spans[0].content.as_ref();
+        let status = line.spans[0].content.as_ref();
         assert!(status.contains("ago"), "{status}");
         assert!(status.ends_with("PR #2614 · session-123"), "{status}");
         let parts: Vec<_> = status.split(" · ").collect();

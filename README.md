@@ -112,6 +112,62 @@ the automatic update.
 | `--reindex` | Reparse every source session and rebuild indexed rows |
 | `--reset` | Delete the DB file outright; rarely needed and more destructive |
 
+## MCP server
+
+`cc-session-finder` can expose your indexed sessions to an LLM over a read-only
+[MCP](https://modelcontextprotocol.io/) stdio server, so an agent can search and
+inspect your prior local work without the TUI or native resume commands.
+
+```sh
+cc-session-finder mcp        # speaks MCP JSON-RPC over stdio
+```
+
+The server is **read-only**: there is no resume, reset, reindex, or delete tool,
+and responses never include native session IDs, transcript paths, or internal
+scores.
+
+### Tools
+
+- `search_sessions` — search sessions by query, or list recent sessions when the
+  query is omitted. Use this first to find candidates.
+- `get_session_overview` — metadata, first/latest message, and message count for
+  one session.
+- `get_session_messages` — page through a session's visible messages by
+  `message_index`.
+- `search_session_messages` — search visible messages within one session.
+
+Session IDs are opaque handles; pass the `id` from a `search_sessions` result to
+the other tools.
+
+### Client configuration
+
+Register the server with an MCP-capable client. For example, in a Claude Code
+`.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "cc-session-finder": {
+      "command": "cc-session-finder",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Debug harness
+
+The `sessions` subcommand group runs the same core as the MCP tools and emits the
+exact same JSON shapes, which is handy for testing without an MCP client:
+
+```sh
+cc-session-finder sessions list --limit 20
+cc-session-finder sessions search "mcp support" --limit 20
+cc-session-finder sessions overview <id>
+cc-session-finder sessions messages <id> --order asc --limit 10
+cc-session-finder sessions search-messages <id> "schema" --limit 10
+```
+
 ## Development
 
 ```sh

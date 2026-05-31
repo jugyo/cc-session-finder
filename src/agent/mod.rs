@@ -4,9 +4,10 @@ pub mod codex;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,

@@ -461,7 +461,7 @@ const NEAR_DISTANCE: u32 = 10;
 /// order); the NEAR clause adds a bm25 boost when they also occur near each
 /// other. Tokens shorter than 3 chars are dropped; if nothing survives, the
 /// whole input is matched as a phrase as a last resort.
-fn build_fts_query(q: &str) -> String {
+pub(crate) fn build_fts_query(q: &str) -> String {
     let trimmed = q.trim();
     if trimmed.is_empty() {
         return String::new();

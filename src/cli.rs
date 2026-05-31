@@ -10,7 +10,8 @@ use serde::Serialize;
 use crate::index;
 use crate::index::ingest::{IngestStats, Progress};
 use crate::index::search::{Hit, TimeRange};
-use crate::{Format, IndexArgs, ListArgs, ResumeArgs, SearchArgs, ShowArgs};
+use crate::sessions::{self, MessageOrder, MessagesParams, SearchParams};
+use crate::{Format, IndexArgs, ListArgs, OrderArg, ResumeArgs, SearchArgs, SessionsCmd, ShowArgs};
 
 #[derive(Serialize)]
 struct OutputDoc<'a> {
@@ -147,6 +148,94 @@ pub fn run_resume(args: ResumeArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
+    match cmd {
+        SessionsCmd::List(args) => {
+            let conn = maybe_update(false, args.no_update)?;
+            let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
+            let response = sessions::search_sessions(
+                &conn,
+                SearchParams {
+                    query: None,
+                    limit: Some(args.limit),
+                    cwd: resolve_cwd(args.cwd, args.cwd_only),
+                    cwd_only: args.cwd_only,
+                    time_range,
+                },
+            )?;
+            print_json(&response)
+        }
+        SessionsCmd::Search(args) => {
+            let conn = maybe_update(false, args.no_update)?;
+            let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
+            let response = sessions::search_sessions(
+                &conn,
+                SearchParams {
+                    query: args.query,
+                    limit: Some(args.limit),
+                    cwd: resolve_cwd(args.cwd, args.cwd_only),
+                    cwd_only: args.cwd_only,
+                    time_range,
+                },
+            )?;
+            print_json(&response)
+        }
+        SessionsCmd::Overview(args) => {
+            let conn = index::open()?;
+            match sessions::get_session_overview(&conn, &args.id)? {
+                Some(response) => print_json(&response),
+                None => session_not_found(&args.id),
+            }
+        }
+        SessionsCmd::Messages(args) => {
+            let conn = index::open()?;
+            let params = MessagesParams {
+                id: args.id.clone(),
+                limit: Some(args.limit),
+                order: match args.order {
+                    OrderArg::Asc => MessageOrder::Asc,
+                    OrderArg::Desc => MessageOrder::Desc,
+                },
+                after_message_index: args.after,
+                before_message_index: args.before,
+            };
+            match sessions::get_session_messages(&conn, params)? {
+                Some(response) => print_json(&response),
+                None => session_not_found(&args.id),
+            }
+        }
+        SessionsCmd::SearchMessages(args) => {
+            let conn = index::open()?;
+            match sessions::search_session_messages(&conn, &args.id, &args.query, Some(args.limit))?
+            {
+                Some(response) => print_json(&response),
+                None => session_not_found(&args.id),
+            }
+        }
+    }
+}
+
+fn resolve_cwd(cwd: Option<PathBuf>, cwd_only: bool) -> Option<PathBuf> {
+    if cwd_only {
+        cwd.or_else(default_cwd)
+    } else {
+        cwd
+    }
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<ExitCode> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    serde_json::to_writer_pretty(&mut out, value)?;
+    writeln!(out)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn session_not_found(id: &str) -> Result<ExitCode> {
+    eprintln!("session not found: {id}");
+    Ok(ExitCode::from(3))
+}
+
 fn write_results(
     hits: &[Hit],
     query: Option<&str>,
@@ -228,7 +317,7 @@ fn parse_duration(s: &str) -> Option<i64> {
     Some(n * mult)
 }
 
-fn parse_time_range(since: Option<&str>, until: Option<&str>) -> Result<TimeRange> {
+pub(crate) fn parse_time_range(since: Option<&str>, until: Option<&str>) -> Result<TimeRange> {
     parse_time_range_at(since, until, current_unix_secs())
 }
 

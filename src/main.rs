@@ -7,9 +7,11 @@ mod agent;
 mod cli;
 mod index;
 mod launch;
+mod mcp;
 mod paths;
 mod relative_time;
 mod session;
+mod sessions;
 mod tui;
 
 #[derive(Debug, Parser)]
@@ -49,6 +51,102 @@ enum Cmd {
     Index(IndexArgs),
     /// Resume a session by id with its native agent CLI.
     Resume(ResumeArgs),
+    /// MCP-shaped session queries (debug harness for the MCP server).
+    Sessions(SessionsArgs),
+    /// Run the read-only MCP stdio server.
+    Mcp,
+}
+
+#[derive(Debug, Args)]
+struct SessionsArgs {
+    #[command(subcommand)]
+    command: SessionsCmd,
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionsCmd {
+    /// List recent sessions as MCP session cards.
+    List(SessionsListArgs),
+    /// Search sessions and return MCP session cards.
+    Search(SessionsSearchArgs),
+    /// Lightweight overview of one session.
+    Overview(SessionsOverviewArgs),
+    /// Page through visible messages of one session.
+    Messages(SessionsMessagesArgs),
+    /// Search visible messages within one session.
+    SearchMessages(SessionsSearchMessagesArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionsListArgs {
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    cwd_only: bool,
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
+    since: Option<String>,
+    /// Upper mtime bound, e.g. "1d", "2026-05-25", or RFC3339
+    #[arg(long, visible_alias = "to")]
+    until: Option<String>,
+    #[arg(long)]
+    no_update: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionsSearchArgs {
+    /// Query string; omit to list recent sessions.
+    query: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    #[arg(long)]
+    cwd_only: bool,
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
+    since: Option<String>,
+    /// Upper mtime bound, e.g. "1d", "2026-05-25", or RFC3339
+    #[arg(long, visible_alias = "to")]
+    until: Option<String>,
+    #[arg(long)]
+    no_update: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionsOverviewArgs {
+    id: String,
+}
+
+#[derive(Debug, Args)]
+struct SessionsMessagesArgs {
+    id: String,
+    #[arg(long, value_enum, default_value_t = OrderArg::Asc)]
+    order: OrderArg,
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+    /// Return messages with a greater message index.
+    #[arg(long)]
+    after: Option<u32>,
+    /// Return messages with a smaller message index.
+    #[arg(long)]
+    before: Option<u32>,
+}
+
+#[derive(Debug, Args)]
+struct SessionsSearchMessagesArgs {
+    id: String,
+    query: String,
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OrderArg {
+    Asc,
+    Desc,
 }
 
 #[derive(Debug, Args)]
@@ -138,6 +236,8 @@ fn main() -> ExitCode {
         Some(Cmd::Show(args)) => cli::run_show(args),
         Some(Cmd::Index(args)) => cli::run_index(args, cli.reindex),
         Some(Cmd::Resume(args)) => cli::run_resume(args),
+        Some(Cmd::Sessions(args)) => cli::run_sessions(args.command),
+        Some(Cmd::Mcp) => mcp::run(),
         None => {
             if atty::is(atty::Stream::Stdout) {
                 tui::run(cli.reindex, cli.explain)
