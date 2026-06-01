@@ -69,6 +69,8 @@ mod tests {
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_create: 0,
+            model: None,
+            models: Vec::new(),
             snippet: None,
             snippet_role: None,
             snippet_message_count: None,

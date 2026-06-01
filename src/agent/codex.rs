@@ -86,6 +86,11 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
     } else {
         TokenUsage::default()
     };
+    let models = if source_path.is_file() {
+        models_from_file(&source_path).unwrap_or_default()
+    } else {
+        super::ModelCollector::default()
+    };
     let first_prompt = row
         .first_user_message
         .clone()
@@ -113,6 +118,8 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             tokens_output: usage.output_tokens,
             tokens_cache_read: usage.cached_input_tokens,
             tokens_cache_create: 0,
+            model: models.latest(),
+            models: models.into_models(),
         },
         {
             for (turn_index, message) in messages.iter_mut().enumerate() {
@@ -367,6 +374,36 @@ fn token_usage_from_file(path: &Path) -> Result<TokenUsage> {
     Ok(usage)
 }
 
+fn models_from_file(path: &Path) -> Result<super::ModelCollector> {
+    let file =
+        File::open(path).with_context(|| format!("open codex rollout {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut models = super::ModelCollector::default();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|value| value.as_str()) != Some("turn_context") {
+            continue;
+        }
+        if let Some(model) = value
+            .get("payload")
+            .and_then(|payload| payload.get("model"))
+            .and_then(|model| model.as_str())
+        {
+            models.observe(model);
+        }
+    }
+
+    Ok(models)
+}
+
 fn json_u64(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(|value| value.as_u64()).unwrap_or(0)
 }
@@ -446,6 +483,46 @@ mod tests {
         let messages = extract_messages(Cursor::new(input)).expect("messages");
 
         assert_eq!(messages[0].text, "real request");
+    }
+
+    fn write_model_fixture(tag: &str, body: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ccsf-codex-model-test-{}-{tag}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, body).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn extracts_turn_context_model() {
+        let path = write_model_fixture(
+            "turn-context",
+            r#"{"type":"session_meta","payload":{"model":null,"model_provider":"openai"}}
+{"type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+        );
+
+        let models = models_from_file(&path).expect("models");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(models.latest().as_deref(), Some("gpt-5.5"));
+        assert_eq!(models.into_models(), vec!["gpt-5.5".to_string()]);
+    }
+
+    #[test]
+    fn model_provider_alone_yields_no_concrete_model() {
+        let path = write_model_fixture(
+            "provider-only",
+            r#"{"type":"session_meta","payload":{"model":null,"model_provider":"openai"}}
+{"type":"turn_context","payload":{"cwd":"/repo"}}"#,
+        );
+
+        let models = models_from_file(&path).expect("models");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(models.latest(), None);
+        assert!(models.into_models().is_empty());
     }
 
     #[test]

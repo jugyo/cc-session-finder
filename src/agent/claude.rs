@@ -57,6 +57,8 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             tokens_output: meta.tokens_output,
             tokens_cache_read: meta.tokens_cache_read,
             tokens_cache_create: meta.tokens_cache_create,
+            model: meta.model,
+            models: meta.models,
         },
         messages,
     ))

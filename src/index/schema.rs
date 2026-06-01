@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -42,7 +42,9 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             tokens_input        INTEGER NOT NULL DEFAULT 0,
             tokens_output       INTEGER NOT NULL DEFAULT 0,
             tokens_cache_read   INTEGER NOT NULL DEFAULT 0,
-            tokens_cache_create INTEGER NOT NULL DEFAULT 0
+            tokens_cache_create INTEGER NOT NULL DEFAULT 0,
+            model         TEXT,
+            models_json   TEXT NOT NULL DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_mtime ON sessions(mtime DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_cwd   ON sessions(cwd);
@@ -165,6 +167,15 @@ mod tests {
         assert!(columns.iter().any(|column| column == "native_session_id"));
         assert!(columns.iter().any(|column| column == "source_group"));
         assert!(!columns.iter().any(|column| column == "project_dir"));
+    }
+
+    #[test]
+    fn session_schema_tracks_model_metadata() {
+        let conn = open_indexed_db();
+        let columns = table_columns(&conn, "sessions");
+
+        assert!(columns.iter().any(|column| column == "model"));
+        assert!(columns.iter().any(|column| column == "models_json"));
     }
 
     #[test]

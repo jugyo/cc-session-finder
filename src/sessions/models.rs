@@ -92,6 +92,10 @@ pub struct SessionMetadata {
     pub pr_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
     pub tokens_total: u64,
     pub message_count: u32,
 }
@@ -219,6 +223,8 @@ pub(crate) fn metadata_from_hit(hit: &Hit, message_count: u32) -> SessionMetadat
         pr_number: hit.pr_number,
         pr_url: hit.pr_url.clone(),
         pr_repo: hit.pr_repo.clone(),
+        model: hit.model.clone(),
+        models: hit.models.clone(),
         tokens_total: tokens_total(hit),
         message_count,
     }

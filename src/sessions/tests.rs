@@ -503,6 +503,52 @@ fn generated_schema_has_no_integer_width_format() {
 }
 
 #[test]
+fn metadata_exposes_model_and_omits_when_unknown() {
+    let conn = setup();
+    conn.execute(
+        "INSERT INTO sessions
+           (session_id, agent, native_session_id, cwd, mtime, size, file_path, model, models_json)
+         VALUES ('with', 'codex', 'native-with', '/repo', 200, 0, '/f.jsonl',
+                 'gpt-5.5', '[\"gpt-5.4\",\"gpt-5.5\"]')",
+        [],
+    )
+    .expect("insert with model");
+    conn.execute(
+        "INSERT INTO sessions
+           (session_id, agent, native_session_id, cwd, mtime, size, file_path)
+         VALUES ('without', 'claude', 'native-without', '/repo', 100, 0, '/f.jsonl')",
+        [],
+    )
+    .expect("insert without model");
+
+    let resp = search_sessions(&conn, SearchParams::default()).unwrap();
+    let cards: std::collections::HashMap<&str, &SessionCard> =
+        resp.results.iter().map(|c| (c.id.as_str(), c)).collect();
+
+    let with = cards.get("with").expect("with card");
+    assert_eq!(with.metadata.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        with.metadata.models,
+        vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]
+    );
+
+    let without = cards.get("without").expect("without card");
+    assert_eq!(without.metadata.model, None);
+    assert!(without.metadata.models.is_empty());
+
+    let with_json = serde_json::to_value(&with.metadata).unwrap();
+    assert_eq!(with_json["model"], "gpt-5.5");
+    assert_eq!(
+        with_json["models"],
+        serde_json::json!(["gpt-5.4", "gpt-5.5"])
+    );
+
+    let without_json = serde_json::to_value(&without.metadata).unwrap();
+    assert!(without_json.get("model").is_none());
+    assert!(without_json.get("models").is_none());
+}
+
+#[test]
 fn paged_messages_skip_internal_marker_text() {
     let conn = setup();
     insert_session(&conn, "guarded", "claude", 1, None, None, None);
