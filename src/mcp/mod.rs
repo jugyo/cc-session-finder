@@ -28,6 +28,10 @@ struct SearchSessionsInput {
     /// Max sessions to return (default 20, capped at 100).
     #[serde(default)]
     limit: Option<usize>,
+    /// Opaque continuation cursor returned by a previous search_sessions call.
+    /// When set, the original query and filters are read from the cursor.
+    #[serde(default)]
+    cursor: Option<String>,
     /// Restrict to sessions from this working directory.
     #[serde(default)]
     cwd: Option<String>,
@@ -112,7 +116,7 @@ where
 impl SessionsServer {
     #[tool(
         name = "search_sessions",
-        description = "Search indexed Claude Code and Codex sessions by query, or list recent sessions when query is omitted. Use this first to find candidate sessions."
+        description = "Search indexed Claude Code and Codex sessions by query, or list recent sessions when query is omitted. Pass cursor from a previous response to fetch the next page."
     )]
     async fn search_sessions(
         &self,
@@ -128,6 +132,7 @@ impl SessionsServer {
                 SearchParams {
                     query: input.query,
                     limit: input.limit,
+                    cursor: input.cursor,
                     cwd,
                     cwd_only,
                     time_range,

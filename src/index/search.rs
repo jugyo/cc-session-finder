@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -130,7 +130,19 @@ pub fn list_with_time_range(
     time_range: TimeRange,
     limit: usize,
 ) -> Result<Vec<Hit>> {
+    list_with_time_range_paged(conn, cwd, cwd_only, time_range, limit, 0)
+}
+
+pub fn list_with_time_range_paged(
+    conn: &Connection,
+    cwd: Option<&Path>,
+    cwd_only: bool,
+    time_range: TimeRange,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<Hit>> {
     let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
+    let offset = i64::try_from(offset).context("offset is too large")?;
 
     let mut sql = format!(
         "SELECT {HIT_COLS}
@@ -149,6 +161,8 @@ pub fn list_with_time_range(
     sql.push_str(" ORDER BY mtime DESC, session_id ASC");
     sql.push_str(" LIMIT ?");
     bound.push(Box::new(limit as i64));
+    sql.push_str(" OFFSET ?");
+    bound.push(Box::new(offset));
 
     let mut stmt = conn.prepare(&sql)?;
     let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
@@ -227,6 +241,18 @@ pub fn text_search_with_time_range(
     time_range: TimeRange,
     limit: usize,
 ) -> Result<Vec<Hit>> {
+    text_search_with_time_range_paged(conn, query, cwd, cwd_only, time_range, limit, 0)
+}
+
+pub fn text_search_with_time_range_paged(
+    conn: &Connection,
+    query: &str,
+    cwd: Option<&Path>,
+    cwd_only: bool,
+    time_range: TimeRange,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<Hit>> {
     let cwd_s = cwd.map(|p| p.to_string_lossy().into_owned());
     let q = build_fts_query(query);
     if q.is_empty() {
@@ -266,9 +292,8 @@ pub fn text_search_with_time_range(
             })
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
-    hits.truncate(limit);
 
-    Ok(hits)
+    Ok(hits.into_iter().skip(offset).take(limit).collect())
 }
 
 fn metadata_hits(

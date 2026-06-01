@@ -129,7 +129,9 @@ scores.
 ### Tools
 
 - `search_sessions` — search sessions by query, or list recent sessions when the
-  query is omitted. Use this first to find candidates.
+  query is omitted. Use this first to find candidates; when `has_more` is true,
+  pass `next_cursor` as `cursor` to fetch the next page. The cursor carries the
+  original query and filters.
 - `get_session_overview` — metadata, first/latest message, and message count for
   one session.
 - `get_session_messages` — page through a session's visible messages by
@@ -162,7 +164,9 @@ exact same JSON shapes, which is handy for testing without an MCP client:
 
 ```sh
 cc-session-finder sessions list --limit 20
+cc-session-finder sessions list --limit 20 --cursor <next_cursor>
 cc-session-finder sessions search "mcp support" --limit 20
+cc-session-finder sessions search --limit 20 --cursor <next_cursor>
 cc-session-finder sessions overview <id>
 cc-session-finder sessions messages <id> --order asc --limit 10
 cc-session-finder sessions search-messages <id> "schema" --limit 10

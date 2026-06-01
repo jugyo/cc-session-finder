@@ -119,6 +119,9 @@ pub struct SessionCard {
 pub struct SearchResponse {
     pub results: Vec<SessionCard>,
     pub count: usize,
+    pub has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Lightweight session reference used in message-returning responses.

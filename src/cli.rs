@@ -158,6 +158,7 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
                 SearchParams {
                     query: None,
                     limit: Some(args.limit),
+                    cursor: args.cursor,
                     cwd: resolve_cwd(args.cwd, args.cwd_only),
                     cwd_only: args.cwd_only,
                     time_range,
@@ -173,6 +174,7 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
                 SearchParams {
                     query: args.query,
                     limit: Some(args.limit),
+                    cursor: args.cursor,
                     cwd: resolve_cwd(args.cwd, args.cwd_only),
                     cwd_only: args.cwd_only,
                     time_range,

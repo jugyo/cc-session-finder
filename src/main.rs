@@ -82,6 +82,8 @@ struct SessionsListArgs {
     #[arg(long, default_value_t = 20)]
     limit: usize,
     #[arg(long)]
+    cursor: Option<String>,
+    #[arg(long)]
     cwd: Option<PathBuf>,
     #[arg(long)]
     cwd_only: bool,
@@ -101,6 +103,8 @@ struct SessionsSearchArgs {
     query: Option<String>,
     #[arg(long, default_value_t = 20)]
     limit: usize,
+    #[arg(long)]
+    cursor: Option<String>,
     #[arg(long)]
     cwd: Option<PathBuf>,
     #[arg(long)]

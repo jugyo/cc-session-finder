@@ -19,15 +19,39 @@ fn insert_session(
     first_prompt: Option<&str>,
     git_branch: Option<&str>,
 ) {
+    insert_session_with_cwd(
+        conn,
+        session_id,
+        agent,
+        "/repo",
+        mtime,
+        ai_title,
+        first_prompt,
+        git_branch,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_session_with_cwd(
+    conn: &Connection,
+    session_id: &str,
+    agent: &str,
+    cwd: &str,
+    mtime: i64,
+    ai_title: Option<&str>,
+    first_prompt: Option<&str>,
+    git_branch: Option<&str>,
+) {
     conn.execute(
         "INSERT INTO sessions
            (session_id, agent, native_session_id, cwd, ai_title, first_prompt,
             mtime, size, file_path, git_branch, tokens_input, tokens_output)
-         VALUES (?1, ?2, ?3, '/repo', ?4, ?5, ?6, 0, '/f.jsonl', ?7, 100, 50)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, '/f.jsonl', ?8, 100, 50)",
         params![
             session_id,
             agent,
             format!("native-{session_id}"),
+            cwd,
             ai_title,
             first_prompt,
             mtime,
@@ -70,6 +94,10 @@ fn seed(conn: &Connection) {
         None,
     );
     insert_msg(conn, "codex:s2", 0, "user", "unrelated gamma chatter");
+}
+
+fn ids(resp: &SearchResponse) -> Vec<&str> {
+    resp.results.iter().map(|card| card.id.as_str()).collect()
 }
 
 #[test]
@@ -118,6 +146,181 @@ fn search_returns_message_matches_with_index() {
         .matches
         .iter()
         .any(|m| m.message_index == 0 || m.message_index == 1));
+}
+
+#[test]
+fn recent_list_pages_with_cursor() {
+    let conn = setup();
+    for i in 0..5 {
+        insert_session(
+            &conn,
+            &format!("page-{i}"),
+            "claude",
+            1000 + i,
+            None,
+            None,
+            None,
+        );
+        insert_msg(&conn, &format!("page-{i}"), 0, "user", "hello");
+    }
+
+    let first = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&first), ["page-4", "page-3"]);
+    assert!(first.has_more);
+
+    let second = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(2),
+            cursor: first.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&second), ["page-2", "page-1"]);
+    assert!(second.has_more);
+
+    let third = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(2),
+            cursor: second.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&third), ["page-0"]);
+    assert!(!third.has_more);
+    assert!(third.next_cursor.is_none());
+
+    let all_ids = [ids(&first), ids(&second), ids(&third)].concat();
+    let unique: std::collections::HashSet<_> = all_ids.iter().collect();
+    assert_eq!(unique.len(), all_ids.len());
+}
+
+#[test]
+fn query_search_pages_with_cursor() {
+    let conn = setup();
+    for i in 0..5 {
+        let id = format!("needle-{i}");
+        insert_session(&conn, &id, "claude", 1000 + i, None, None, None);
+        insert_msg(&conn, &id, 0, "user", "needle topic");
+    }
+
+    let first = search_sessions(
+        &conn,
+        SearchParams {
+            query: Some("needle".to_string()),
+            limit: Some(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&first), ["needle-4", "needle-3"]);
+    assert!(first.has_more);
+
+    let second = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(2),
+            cursor: first.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&second), ["needle-2", "needle-1"]);
+    assert!(second.has_more);
+
+    let third = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(2),
+            cursor: second.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&third), ["needle-0"]);
+    assert!(!third.has_more);
+}
+
+#[test]
+fn cursor_preserves_search_filters() {
+    let conn = setup();
+    insert_session_with_cwd(
+        &conn,
+        "repo-a-new",
+        "claude",
+        "/repo-a",
+        300,
+        None,
+        None,
+        None,
+    );
+    insert_session_with_cwd(
+        &conn,
+        "repo-a-old",
+        "claude",
+        "/repo-a",
+        200,
+        None,
+        None,
+        None,
+    );
+    insert_session_with_cwd(&conn, "repo-b", "claude", "/repo-b", 250, None, None, None);
+    insert_session_with_cwd(&conn, "too-old", "claude", "/repo-a", 50, None, None, None);
+    insert_session_with_cwd(&conn, "too-new", "claude", "/repo-a", 500, None, None, None);
+
+    let first = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(1),
+            cwd: Some(std::path::PathBuf::from("/repo-a")),
+            cwd_only: true,
+            time_range: TimeRange {
+                since: Some(100),
+                until: Some(400),
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&first), ["repo-a-new"]);
+    assert!(first.has_more);
+
+    let second = search_sessions(
+        &conn,
+        SearchParams {
+            limit: Some(10),
+            cursor: first.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&second), ["repo-a-old"]);
+    assert!(!second.has_more);
+}
+
+#[test]
+fn invalid_search_cursor_returns_error() {
+    let conn = setup();
+    let err = search_sessions(
+        &conn,
+        SearchParams {
+            cursor: Some("not-a-valid-cursor".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("invalid search cursor"));
 }
 
 #[test]
