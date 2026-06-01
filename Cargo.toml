@@ -1,6 +1,6 @@
 [package]
 name = "cc-session-finder"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "Fast full-text search for Claude Code and Codex sessions"
 license = "MIT"
