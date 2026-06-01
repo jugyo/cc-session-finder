@@ -27,6 +27,8 @@ pub struct SessionMeta {
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_create: u64,
+    pub model: Option<String>,
+    pub models: Vec<String>,
 }
 
 /// Indexable message text extracted from one JSONL record.
@@ -69,6 +71,7 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
     let mut tokens_output: u64 = 0;
     let mut tokens_cache_read: u64 = 0;
     let mut tokens_cache_create: u64 = 0;
+    let mut models = crate::agent::ModelCollector::default();
 
     let f = File::open(path)?;
     let reader = BufReader::new(f);
@@ -125,6 +128,15 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
                         }
                     }
                 }
+                if let Some(model) = v
+                    .get("message")
+                    .and_then(|m| m.get("model"))
+                    .and_then(|m| m.as_str())
+                {
+                    if is_concrete_model(model) {
+                        models.observe(model);
+                    }
+                }
                 if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
                     tokens_input = tokens_input.saturating_add(usage_u64(u, "input_tokens"));
                     tokens_output = tokens_output.saturating_add(usage_u64(u, "output_tokens"));
@@ -171,7 +183,16 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
         tokens_output,
         tokens_cache_read,
         tokens_cache_create,
+        model: models.latest(),
+        models: models.into_models(),
     })
+}
+
+/// Claude marks synthetic assistant records (e.g. interrupts) with the
+/// `<synthetic>` placeholder rather than a real model id; those are not a model.
+fn is_concrete_model(model: &str) -> bool {
+    let model = model.trim();
+    !model.is_empty() && model != "<synthetic>"
 }
 
 pub fn extract_indexable_messages_from_file(path: &Path) -> Result<Vec<IndexableMessage>> {
@@ -302,6 +323,65 @@ mod tests {
 
     fn message(v: Value) -> Option<(String, String)> {
         indexable_message_text(&v)
+    }
+
+    fn write_fixture(tag: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ccsf-model-test-{}-{tag}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, body).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn extracts_single_assistant_model() {
+        let path = write_fixture(
+            "single",
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"hello"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(meta.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(meta.models, vec!["claude-opus-4-8".to_string()]);
+    }
+
+    #[test]
+    fn extracts_ordered_unique_models_with_latest() {
+        let path = write_fixture(
+            "two",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"a"}]}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"b"}]}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"c"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            meta.models,
+            vec!["claude-opus-4-7".to_string(), "claude-opus-4-8".to_string()]
+        );
+        assert_eq!(meta.model.as_deref(), Some("claude-opus-4-7"));
+    }
+
+    #[test]
+    fn ignores_synthetic_and_missing_models() {
+        let path = write_fixture(
+            "synthetic",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"a"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"b"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(meta.model, None);
+        assert!(meta.models.is_empty());
     }
 
     #[test]

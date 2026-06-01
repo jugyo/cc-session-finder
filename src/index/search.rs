@@ -37,6 +37,10 @@ pub struct Hit {
     pub tokens_cache_read: u64,
     pub tokens_cache_create: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet_role: Option<String>,
@@ -307,7 +311,7 @@ fn metadata_hits(
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
-                    s.agent, s.native_session_id, s.source_group,
+                    s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
                     bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
              FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
              WHERE sessions_fts MATCH ?"
@@ -337,7 +341,7 @@ fn metadata_hits(
          SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
                 git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
-                agent, native_session_id, source_group,
+                agent, native_session_id, source_group, model, models_json,
                 bm25_rank, keyword_score, recency, freshness_boost, relevance_score, final_score
          FROM scored
          ORDER BY mtime DESC, bm25_rank ASC, session_id ASC"
@@ -385,7 +389,7 @@ fn message_hits(
              SELECT s.session_id, s.ai_title, s.cwd, s.mtime, s.msg_count, s.first_prompt,
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
-                    s.agent, s.native_session_id, s.source_group,
+                    s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
@@ -408,7 +412,7 @@ fn message_hits(
          SELECT session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path,
                 git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
-                agent, native_session_id, source_group,
+                agent, native_session_id, source_group, model, models_json,
                 rank, role, snippet, recency, 1.0 + recency * {FRESHNESS_BOOST_WEIGHT} AS freshness_boost
          FROM scored
          ORDER BY rank ASC, mtime DESC, session_id ASC, turn_index ASC",
@@ -513,9 +517,9 @@ pub(crate) fn build_fts_query(q: &str) -> String {
 const HIT_COLS: &str = "session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path, \
      git_branch, pr_number, pr_url, pr_repo, \
      tokens_input, tokens_output, tokens_cache_read, tokens_cache_create, \
-     agent, native_session_id, source_group";
+     agent, native_session_id, source_group, model, models_json";
 
-const HIT_COL_COUNT: usize = 18;
+const HIT_COL_COUNT: usize = 20;
 const COL_BM25_RANK: usize = HIT_COL_COUNT;
 const COL_KEYWORD_SCORE: usize = HIT_COL_COUNT + 1;
 const COL_RECENCY: usize = HIT_COL_COUNT + 2;
@@ -546,6 +550,13 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
     let is_worktree = source_group
         .as_deref()
         .is_some_and(|source_group| source_group.contains("--claude-worktrees-"));
+    let model = r.get::<_, Option<String>>(18).ok().flatten();
+    let models = r
+        .get::<_, Option<String>>(19)
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+        .unwrap_or_default();
     Ok(Hit {
         session_id,
         agent,
@@ -565,6 +576,8 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         tokens_output: r.get::<_, i64>(12).unwrap_or(0).max(0) as u64,
         tokens_cache_read: r.get::<_, i64>(13).unwrap_or(0).max(0) as u64,
         tokens_cache_create: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
+        model,
+        models,
         snippet: None,
         snippet_role: None,
         snippet_message_count: None,

@@ -67,6 +67,39 @@ pub struct SourceSession {
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_create: u64,
+    pub model: Option<String>,
+    pub models: Vec<String>,
+}
+
+/// Collects model names observed across a session in order, keeping the set
+/// unique while remembering the most recently seen value. `<synthetic>` and
+/// other non-concrete markers are filtered by callers before `observe`.
+#[derive(Debug, Default, Clone)]
+pub struct ModelCollector {
+    models: Vec<String>,
+    latest: Option<String>,
+}
+
+impl ModelCollector {
+    pub fn observe(&mut self, model: &str) {
+        let model = model.trim();
+        if model.is_empty() {
+            return;
+        }
+        self.latest = Some(model.to_string());
+        if !self.models.iter().any(|seen| seen == model) {
+            self.models.push(model.to_string());
+        }
+    }
+
+    /// The most recently observed model, or `None` when nothing was seen.
+    pub fn latest(&self) -> Option<String> {
+        self.latest.clone()
+    }
+
+    pub fn into_models(self) -> Vec<String> {
+        self.models
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
