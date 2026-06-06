@@ -2,7 +2,7 @@
 //! wrappers over [`crate::sessions`]; stdout is reserved for JSON-RPC and all
 //! diagnostics go to stderr via tracing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -224,7 +224,7 @@ impl ServerHandler for SessionsServer {
 
 fn resolve_cwd(cwd: Option<&str>, cwd_only: bool) -> Option<PathBuf> {
     match cwd {
-        Some(p) => Some(PathBuf::from(p)),
+        Some(p) => Some(crate::paths::normalize_cwd_filter(Path::new(p))),
         None if cwd_only => std::env::current_dir().ok(),
         None => None,
     }

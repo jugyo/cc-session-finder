@@ -40,6 +40,13 @@ fn default_cwd() -> Option<PathBuf> {
     std::env::current_dir().ok()
 }
 
+/// Normalize a `--cwd` value, falling back to the current directory.
+fn effective_cwd(cwd: Option<PathBuf>) -> Option<PathBuf> {
+    cwd.as_deref()
+        .map(crate::paths::normalize_cwd_filter)
+        .or_else(default_cwd)
+}
+
 fn maybe_update(reindex: bool, no_update: bool) -> Result<rusqlite::Connection> {
     let mut conn = index::open()?;
     if no_update && !reindex {
@@ -56,7 +63,7 @@ fn maybe_update(reindex: bool, no_update: bool) -> Result<rusqlite::Connection> 
 pub fn run_list(args: ListArgs, reindex: bool, explain: bool) -> Result<ExitCode> {
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
-    let cwd = args.cwd.or_else(default_cwd);
+    let cwd = effective_cwd(args.cwd);
     let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
     let hits = index::search::list_with_time_range(
         &conn,
@@ -80,7 +87,7 @@ pub fn run_list(args: ListArgs, reindex: bool, explain: bool) -> Result<ExitCode
 pub fn run_search(args: SearchArgs, reindex: bool, explain: bool) -> Result<ExitCode> {
     let start = std::time::Instant::now();
     let conn = maybe_update(reindex, args.no_update)?;
-    let cwd = args.cwd.or_else(default_cwd);
+    let cwd = effective_cwd(args.cwd);
     let time_range = parse_time_range(args.since.as_deref(), args.until.as_deref())?;
 
     let hits = index::search::text_search_with_time_range(
@@ -218,10 +225,11 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
 }
 
 fn resolve_cwd(cwd: Option<PathBuf>, cwd_only: bool) -> Option<PathBuf> {
+    let normalized = cwd.as_deref().map(crate::paths::normalize_cwd_filter);
     if cwd_only {
-        cwd.or_else(default_cwd)
+        normalized.or_else(default_cwd)
     } else {
-        cwd
+        normalized
     }
 }
 
