@@ -101,11 +101,11 @@ impl SessionsServer {
 async fn with_db<T, F>(f: F) -> Result<T, String>
 where
     T: Send + 'static,
-    F: FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
+    F: FnOnce(&mut rusqlite::Connection) -> Result<T> + Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let conn = index::open()?;
-        f(&conn)
+        let mut conn = index::open()?;
+        f(&mut conn)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -123,6 +123,7 @@ impl SessionsServer {
         Parameters(input): Parameters<SearchSessionsInput>,
     ) -> Result<Json<SearchResponse>, String> {
         let response = with_db(move |conn| {
+            index::ingest::scan_and_update(conn, false, &index::ingest::NoopProgress)?;
             let time_range =
                 crate::cli::parse_time_range(input.since.as_deref(), input.until.as_deref())?;
             let cwd_only = input.cwd_only.unwrap_or(false);
