@@ -201,6 +201,7 @@ impl SessionsServer {
             return Err("query must be non-empty".to_string());
         }
         let response = with_db(move |conn| {
+            index::ingest::scan_and_update(conn, false, &index::ingest::NoopProgress)?;
             sessions::search_session_messages(conn, &input.id, &input.query, input.limit)
         })
         .await?;
