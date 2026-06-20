@@ -5,7 +5,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use super::models::SessionMessage;
+use super::models::{truncate_text, SessionMessage, TrajectoryStepView, TRAJECTORY_TEXT_CAP};
 use crate::index::search::build_fts_query;
 use crate::session::is_human_visible_text;
 
@@ -173,6 +173,89 @@ pub fn efficiency_rows(conn: &Connection, since: Option<i64>) -> Result<Vec<Effi
         })
     })?;
     rows.collect::<Result<_, _>>().map_err(Into::into)
+}
+
+/// Read up to `limit` trajectory steps for a session ordered by `step_index`,
+/// optionally starting after a given index. Returns the page plus whether more
+/// steps follow it. Long tool input / result text is capped for the wire.
+pub fn trajectory_steps(
+    conn: &Connection,
+    id: &str,
+    after_step_index: Option<u32>,
+    limit: usize,
+) -> Result<(Vec<TrajectoryStepView>, bool)> {
+    let mut sql = String::from(
+        "SELECT step_index, role, tool_name, tool_input, tool_input_bytes,
+                tool_result_bytes, tool_result, is_error,
+                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                timestamp, is_sidechain, context_management,
+                is_api_error, api_error_status, retry_attempt, max_retries,
+                stop_reason, attribution_mcp_tool, attribution_mcp_server,
+                attribution_skill, duration_ms, permission_mode, parent_uuid
+         FROM trajectory WHERE session_id = ?1",
+    );
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id.to_string())];
+    if let Some(after) = after_step_index {
+        sql.push_str(" AND step_index > ?");
+        bound.push(Box::new(after as i64));
+    }
+    sql.push_str(" ORDER BY step_index ASC LIMIT ?");
+    bound.push(Box::new(limit as i64 + 1));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+    let mut rows = stmt.query(params_iter.as_slice())?;
+    let mut steps = Vec::new();
+    while let Some(r) = rows.next()? {
+        steps.push(step_view_from_row(r)?);
+    }
+
+    let has_more = steps.len() > limit;
+    steps.truncate(limit);
+    Ok((steps, has_more))
+}
+
+fn step_view_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TrajectoryStepView> {
+    let tool_input_raw: Option<String> = r.get(3)?;
+    let (tool_input, tool_input_truncated) = match tool_input_raw {
+        Some(text) => {
+            let (capped, truncated) = truncate_text(&text, TRAJECTORY_TEXT_CAP);
+            (Some(capped), truncated)
+        }
+        None => (None, false),
+    };
+    let tool_result: Option<String> = r
+        .get::<_, Option<String>>(6)?
+        .map(|text| truncate_text(&text, TRAJECTORY_TEXT_CAP).0);
+    Ok(TrajectoryStepView {
+        step_index: r.get::<_, i64>(0)?.max(0) as u32,
+        role: r.get(1)?,
+        tool_name: r.get(2)?,
+        tool_input,
+        tool_input_truncated,
+        tool_input_bytes: r.get::<_, i64>(4)?.max(0) as u64,
+        tool_result_bytes: r.get::<_, i64>(5)?.max(0) as u64,
+        tool_result,
+        is_error: r.get::<_, i64>(7)? != 0,
+        tokens_input: r.get::<_, i64>(8)?.max(0) as u64,
+        tokens_output: r.get::<_, i64>(9)?.max(0) as u64,
+        tokens_cache_read: r.get::<_, i64>(10)?.max(0) as u64,
+        tokens_cache_create: r.get::<_, i64>(11)?.max(0) as u64,
+        timestamp: r.get(12)?,
+        is_sidechain: r.get::<_, i64>(13)? != 0,
+        context_management: r.get(14)?,
+        is_api_error: r.get::<_, i64>(15)? != 0,
+        api_error_status: r.get(16)?,
+        retry_attempt: r.get(17)?,
+        max_retries: r.get(18)?,
+        stop_reason: r.get(19)?,
+        attribution_mcp_tool: r.get(20)?,
+        attribution_mcp_server: r.get(21)?,
+        attribution_skill: r.get(22)?,
+        duration_ms: r.get(23)?,
+        permission_mode: r.get(24)?,
+        parent_uuid: r.get(25)?,
+    })
 }
 
 /// A page of messages plus whether more exist on either side of the returned

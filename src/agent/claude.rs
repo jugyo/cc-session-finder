@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::{AgentKind, SourceMessage, SourceRecord, SourceSession};
+use super::{AgentKind, ExtractedSession, SourceMessage, SourceRecord, SourceSession};
 
 pub fn list_sessions() -> Result<Vec<SourceRecord>> {
     let root = crate::paths::claude_projects_root();
@@ -25,7 +25,7 @@ pub fn list_sessions() -> Result<Vec<SourceRecord>> {
     Ok(out)
 }
 
-pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<SourceMessage>)> {
+pub fn extract_session(record: &SourceRecord) -> Result<ExtractedSession> {
     let meta = crate::session::extract_from_file(&record.path)?;
     let messages = crate::session::extract_indexable_messages_from_file(&record.path)?
         .into_iter()
@@ -35,9 +35,13 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             text: message.text,
         })
         .collect();
+    let trajectory = crate::session::extract_trajectory_from_file(
+        &record.path,
+        crate::session::store_tool_results_enabled(),
+    )?;
 
-    Ok((
-        SourceSession {
+    Ok(ExtractedSession {
+        session: SourceSession {
             native_session_id: meta.session_id.clone(),
             session_id: meta.session_id,
             agent: AgentKind::Claude,
@@ -65,7 +69,8 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             wall_clock_ms: meta.wall_clock_ms,
         },
         messages,
-    ))
+        trajectory,
+    })
 }
 
 fn file_mtime(metadata: &std::fs::Metadata) -> i64 {

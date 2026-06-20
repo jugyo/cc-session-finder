@@ -77,6 +77,8 @@ enum SessionsCmd {
     SearchMessages(SessionsSearchMessagesArgs),
     /// Rank sessions by an efficiency signal to surface outliers.
     Inefficient(SessionsInefficientArgs),
+    /// Page through the step-level trajectory of one session.
+    Trajectory(SessionsTrajectoryArgs),
 }
 
 #[derive(Debug, Args)]
@@ -153,6 +155,16 @@ struct SessionsSearchMessagesArgs {
 enum OrderArg {
     Asc,
     Desc,
+}
+
+#[derive(Debug, Args)]
+struct SessionsTrajectoryArgs {
+    id: String,
+    #[arg(long, default_value_t = 30)]
+    limit: usize,
+    /// Return steps with a greater step index.
+    #[arg(long)]
+    after: Option<u32>,
 }
 
 #[derive(Debug, Args)]

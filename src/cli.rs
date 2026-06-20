@@ -12,6 +12,7 @@ use crate::index::ingest::{IngestStats, Progress};
 use crate::index::search::{Hit, TimeRange};
 use crate::sessions::{
     self, InefficientParams, InefficientSort, MessageOrder, MessagesParams, SearchParams,
+    TrajectoryParams,
 };
 use crate::{
     Format, IndexArgs, ListArgs, OrderArg, ResumeArgs, SearchArgs, SessionsCmd, ShowArgs, SortByArg,
@@ -241,6 +242,18 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
                 },
             )?;
             print_json(&response)
+        }
+        SessionsCmd::Trajectory(args) => {
+            let conn = index::open()?;
+            let params = TrajectoryParams {
+                id: args.id.clone(),
+                limit: Some(args.limit),
+                after_step_index: args.after,
+            };
+            match sessions::get_session_trajectory(&conn, params)? {
+                Some(response) => print_json(&response),
+                None => session_not_found(&args.id),
+            }
         }
     }
 }

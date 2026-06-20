@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::Value;
 
-use super::{AgentKind, SourceMessage, SourceRecord, SourceSession};
+use super::{AgentKind, ExtractedSession, SourceMessage, SourceRecord, SourceSession};
 
 const SESSION_PREFIX: &str = "codex:";
 
@@ -59,7 +59,7 @@ pub fn list_sessions() -> Result<Vec<SourceRecord>> {
     Ok(records)
 }
 
-pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<SourceMessage>)> {
+pub fn extract_session(record: &SourceRecord) -> Result<ExtractedSession> {
     let db_path = crate::paths::codex_state_db();
     let native_session_id = native_session_id(&record.session_id);
     let conn = open_state_db(&db_path)?;
@@ -97,8 +97,8 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
         .filter(|text| crate::session::is_human_visible_text(text))
         .or_else(|| first_user_message(&messages));
 
-    Ok((
-        SourceSession {
+    Ok(ExtractedSession {
+        session: SourceSession {
             session_id: stable_session_id(&row.id),
             agent: AgentKind::Codex,
             native_session_id: row.id.clone(),
@@ -127,13 +127,16 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             thinking_tokens: 0,
             wall_clock_ms: 0,
         },
-        {
+        messages: {
             for (turn_index, message) in messages.iter_mut().enumerate() {
                 message.turn_index = turn_index as u32;
             }
             messages
         },
-    ))
+        // Step-level trajectory is Claude-only for now; the Codex rollout
+        // schema differs and is out of scope for this scaffold.
+        trajectory: Vec::new(),
+    })
 }
 
 fn open_state_db(path: &Path) -> Result<Connection> {

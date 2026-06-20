@@ -45,11 +45,16 @@ pub const MESSAGES_LIMIT_DEFAULT: usize = 10;
 pub const MESSAGES_LIMIT_CAP: usize = 30;
 pub const SEARCH_MESSAGES_LIMIT_DEFAULT: usize = 10;
 pub const SEARCH_MESSAGES_LIMIT_CAP: usize = 30;
+pub const TRAJECTORY_LIMIT_DEFAULT: usize = 30;
+pub const TRAJECTORY_LIMIT_CAP: usize = 100;
 
 const CARD_TEXT_CAP: usize = 1200;
 const OVERVIEW_TEXT_CAP: usize = 1200;
 const MESSAGES_TEXT_CAP: usize = 2000;
 const FIRST_PROMPT_CAP: usize = 500;
+/// Char cap applied to `tool_input` / `tool_result` text in trajectory reads,
+/// independent of the larger byte cap used when storing them.
+pub(crate) const TRAJECTORY_TEXT_CAP: usize = 2000;
 
 /// Cap used for matching / latest / first messages embedded in search cards and
 /// overviews.
@@ -177,6 +182,65 @@ pub struct MessageSearchResponse {
     pub session: SessionRef,
     pub matches: Vec<SessionMessage>,
     pub count: usize,
+}
+
+/// One `trajectory` step exposed over the read API. Long `tool_input` /
+/// `tool_result` text is capped to [`TRAJECTORY_TEXT_CAP`] chars; `*_bytes`
+/// fields report the original stored size.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[schemars(transform = strip_int_formats)]
+pub struct TrajectoryStepView {
+    pub step_index: u32,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<String>,
+    pub tool_input_truncated: bool,
+    pub tool_input_bytes: u64,
+    pub tool_result_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<String>,
+    pub is_error: bool,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_create: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    pub is_sidechain: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<String>,
+    pub is_api_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_error_status: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_attempt: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution_mcp_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution_mcp_server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution_skill: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
+pub struct TrajectoryResponse {
+    pub session: SessionRef,
+    pub steps: Vec<TrajectoryStepView>,
+    pub count: usize,
+    pub has_more: bool,
 }
 
 /// One row of [`super::find_inefficient_sessions`]: a session reduced to the

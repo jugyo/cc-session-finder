@@ -141,6 +141,12 @@ scores.
   outliers. `sort_by` is `billable_tokens` (default), `error_rate` (tool errors
   ÷ tool calls), or `cache_read_ratio` (cache reads ÷ output tokens). Returns
   per-session counts and ratios only — no message text or tool bodies.
+- `get_session_trajectory` — page through one session's step-level trajectory
+  (one row per tool call, assistant turn, API error, or context-compaction
+  event). Each step carries the tool name and input, byte sizes, per-step token
+  attribution, error/sidechain flags, MCP/skill attribution, stop reason, and a
+  derived duration. Use it to drill into *where* a session flagged by
+  `find_inefficient_sessions` spent its tokens or hit errors.
 
 Session IDs are opaque handles; pass the `id` from a `search_sessions` result to
 the other tools.
@@ -175,12 +181,38 @@ cc-session-finder sessions overview <id>
 cc-session-finder sessions messages <id> --order asc --limit 10
 cc-session-finder sessions search-messages <id> "schema" --limit 10
 cc-session-finder sessions inefficient --sort-by cache-read-ratio --limit 20
+cc-session-finder sessions trajectory <id> --limit 30
 ```
 
 Each indexed session also carries derived analysis columns — `tool_call_count`,
 `tool_error_count`, `thinking_tokens`, and `wall_clock_ms` (last − first
 transcript timestamp) — surfaced in `show`, the `sessions` overview/cards
 metadata, and `find_inefficient_sessions`.
+
+### Step-level trajectory
+
+Beyond the per-session aggregates, each Claude session is also decomposed into a
+`trajectory` table — one row per step (tool call, tool-less assistant turn, API
+error, or context-compaction event). A step records the `tool_use` input in full
+(`tool_input`, capped at 128 KB with the original size kept in
+`tool_input_bytes`), the result size (`tool_result_bytes`), an `is_error` flag,
+per-step token attribution (deduped by `message.id`, so step tokens sum to the
+session totals), and small inefficiency-detection fields: `is_sidechain`,
+`context_management`, `is_api_error` / `api_error_status`, `stop_reason`,
+`attribution_mcp_server` / `attribution_mcp_tool` / `attribution_skill`,
+`duration_ms` (from the gap to the next step), and `permission_mode`. Read it via
+`get_session_trajectory` or `sessions trajectory`. Codex sessions currently yield
+an empty trajectory.
+
+**Tool result bodies are not stored by default** — only `tool_result_bytes` is
+recorded, since result content runs ~45 MB/month (~700 MB/year) here. To capture
+bodies too, set `CC_SESSION_FINDER_STORE_TOOL_RESULTS=1` before indexing; bodies
+are then stored (capped at 128 KB) in `tool_result`.
+
+**Privacy:** `tool_input` (and opt-in `tool_result`) bodies are stored verbatim
+in the local cache DB, so source code, file paths, shell commands, and any
+secrets that passed through tool calls are kept in plaintext under the cache
+directory. The cache never leaves your machine, but treat it as sensitive.
 
 ## Development
 

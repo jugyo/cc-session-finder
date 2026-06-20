@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -15,6 +15,7 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             r#"
             DROP TABLE IF EXISTS messages_fts;
             DROP TABLE IF EXISTS sessions_fts;
+            DROP TABLE IF EXISTS trajectory;
             DROP TABLE IF EXISTS messages;
             DROP TABLE IF EXISTS sessions;
             "#,
@@ -62,6 +63,40 @@ pub fn ensure(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 
+        CREATE TABLE IF NOT EXISTS trajectory (
+            id            INTEGER PRIMARY KEY,
+            session_id    TEXT NOT NULL,
+            agent         TEXT NOT NULL DEFAULT 'claude',
+            step_index    INTEGER NOT NULL,
+            role          TEXT NOT NULL,
+            tool_name     TEXT,
+            tool_input    TEXT,
+            tool_input_bytes  INTEGER NOT NULL DEFAULT 0,
+            tool_result_bytes INTEGER NOT NULL DEFAULT 0,
+            tool_result   TEXT,
+            is_error      INTEGER NOT NULL DEFAULT 0,
+            tokens_input        INTEGER NOT NULL DEFAULT 0,
+            tokens_output       INTEGER NOT NULL DEFAULT 0,
+            tokens_cache_read   INTEGER NOT NULL DEFAULT 0,
+            tokens_cache_create INTEGER NOT NULL DEFAULT 0,
+            timestamp     INTEGER,
+            is_sidechain  INTEGER NOT NULL DEFAULT 0,
+            context_management TEXT,
+            is_api_error  INTEGER NOT NULL DEFAULT 0,
+            api_error_status   INTEGER,
+            retry_attempt      INTEGER,
+            max_retries        INTEGER,
+            stop_reason        TEXT,
+            attribution_mcp_tool   TEXT,
+            attribution_mcp_server TEXT,
+            attribution_skill      TEXT,
+            duration_ms        INTEGER,
+            permission_mode    TEXT,
+            parent_uuid        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_trajectory_session
+            ON trajectory(session_id, step_index);
+
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
             ai_title,
             first_prompt,
@@ -86,6 +121,7 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             INSERT INTO sessions_fts(sessions_fts, rowid, ai_title, first_prompt, cwd)
             VALUES('delete', old.rowid, old.ai_title, old.first_prompt, old.cwd);
             DELETE FROM messages WHERE session_id = old.session_id;
+            DELETE FROM trajectory WHERE session_id = old.session_id;
         END;
         CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
             INSERT INTO sessions_fts(sessions_fts, rowid, ai_title, first_prompt, cwd)
@@ -151,6 +187,56 @@ mod tests {
             ["id", "session_id", "turn_index", "role", "text"]
         );
         assert_eq!(table_columns(&conn, "messages_fts"), ["text"]);
+    }
+
+    #[test]
+    fn trajectory_schema_is_created() {
+        let conn = open_indexed_db();
+        let columns = table_columns(&conn, "trajectory");
+        for expected in [
+            "session_id",
+            "step_index",
+            "role",
+            "tool_name",
+            "tool_input",
+            "tool_input_bytes",
+            "tool_result_bytes",
+            "is_error",
+            "tokens_input",
+            "is_sidechain",
+            "context_management",
+            "is_api_error",
+            "api_error_status",
+            "stop_reason",
+            "attribution_mcp_tool",
+            "attribution_skill",
+            "duration_ms",
+            "permission_mode",
+        ] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "missing trajectory column {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn deleting_session_deletes_trajectory() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1");
+        conn.execute(
+            "INSERT INTO trajectory (session_id, step_index, role) VALUES ('s1', 0, 'assistant')",
+            [],
+        )
+        .expect("insert step");
+
+        conn.execute("DELETE FROM sessions WHERE session_id = 's1'", [])
+            .expect("delete session");
+
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM trajectory", [], |r| r.get(0))
+            .expect("trajectory count");
+        assert_eq!(count, 0);
     }
 
     #[test]

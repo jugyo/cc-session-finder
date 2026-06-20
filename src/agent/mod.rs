@@ -124,7 +124,15 @@ pub fn list_sessions(kind: AgentKind) -> Result<Vec<SourceRecord>> {
     }
 }
 
-pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<SourceMessage>)> {
+/// Parsed output for one session: metadata, indexable messages, and the
+/// per-step trajectory. Codex sessions currently yield an empty trajectory.
+pub struct ExtractedSession {
+    pub session: SourceSession,
+    pub messages: Vec<SourceMessage>,
+    pub trajectory: Vec<crate::session::TrajectoryStep>,
+}
+
+pub fn extract_session(record: &SourceRecord) -> Result<ExtractedSession> {
     match record.agent {
         AgentKind::Claude => claude::extract_session(record),
         AgentKind::Codex => codex::extract_session(record),

@@ -21,6 +21,7 @@ use crate::index::search::{self, Hit, TimeRange};
 pub use models::{
     InefficientSession, InefficientSessionsResponse, MessageSearchResponse, MessagesResponse,
     OverviewResponse, OverviewSession, SearchResponse, SessionCard, SessionMessage, SessionRef,
+    TrajectoryResponse,
 };
 pub use query::MessageOrder;
 
@@ -28,7 +29,7 @@ use models::{
     cap_limit, capped_first_prompt, format_updated_at, metadata_from_hit, CARD_MESSAGE_CAP,
     FULL_MESSAGE_CAP, MATCHES_PER_SESSION, MESSAGES_LIMIT_CAP, MESSAGES_LIMIT_DEFAULT,
     OVERVIEW_MESSAGE_CAP, SEARCH_LIMIT_CAP, SEARCH_LIMIT_DEFAULT, SEARCH_MESSAGES_LIMIT_CAP,
-    SEARCH_MESSAGES_LIMIT_DEFAULT,
+    SEARCH_MESSAGES_LIMIT_DEFAULT, TRAJECTORY_LIMIT_CAP, TRAJECTORY_LIMIT_DEFAULT,
 };
 
 /// Inputs for [`search_sessions`]. Callers parse `since`/`until` into a
@@ -51,6 +52,14 @@ pub struct MessagesParams {
     pub order: MessageOrder,
     pub after_message_index: Option<u32>,
     pub before_message_index: Option<u32>,
+}
+
+/// Inputs for [`get_session_trajectory`].
+#[derive(Debug, Clone)]
+pub struct TrajectoryParams {
+    pub id: String,
+    pub limit: Option<usize>,
+    pub after_step_index: Option<u32>,
 }
 
 /// Sort key for [`find_inefficient_sessions`].
@@ -416,6 +425,27 @@ pub fn search_session_messages(
         session: reference,
         count: matches.len(),
         matches,
+    }))
+}
+
+/// Page through the step-level trajectory of one session, or `None` if the
+/// session is not indexed. Returns counts and per-step metadata; tool input and
+/// (opt-in) result bodies are capped for the wire.
+pub fn get_session_trajectory(
+    conn: &Connection,
+    params: TrajectoryParams,
+) -> Result<Option<TrajectoryResponse>> {
+    let Some(reference) = session_ref(conn, &params.id)? else {
+        return Ok(None);
+    };
+    let limit = cap_limit(params.limit, TRAJECTORY_LIMIT_DEFAULT, TRAJECTORY_LIMIT_CAP);
+    let (steps, has_more) =
+        query::trajectory_steps(conn, &reference.id, params.after_step_index, limit)?;
+    Ok(Some(TrajectoryResponse {
+        session: reference,
+        count: steps.len(),
+        steps,
+        has_more,
     }))
 }
 

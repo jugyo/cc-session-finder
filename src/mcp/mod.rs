@@ -17,7 +17,7 @@ use crate::index;
 use crate::sessions::{
     self, InefficientParams, InefficientSessionsResponse, InefficientSort, MessageOrder,
     MessageSearchResponse, MessagesParams, MessagesResponse, OverviewResponse, SearchParams,
-    SearchResponse,
+    SearchResponse, TrajectoryParams, TrajectoryResponse,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -82,6 +82,19 @@ struct SearchSessionMessagesInput {
     /// Max matches to return (default 10, capped at 30).
     #[serde(default)]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
+struct GetSessionTrajectoryInput {
+    /// Opaque session id.
+    id: String,
+    /// Max steps to return (default 30, capped at 100).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Return steps with a greater step index (for paging).
+    #[serde(default)]
+    after_step_index: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -227,6 +240,30 @@ impl SessionsServer {
     }
 
     #[tool(
+        name = "get_session_trajectory",
+        description = "Page through the step-level trajectory of one session (one row per tool call, assistant turn, API error, or context-compaction event). Returns tool name and input, byte sizes, per-step token attribution, error and sidechain flags, MCP/skill attribution, stop reason, and duration. Use to drill into where a session spent tokens or hit errors."
+    )]
+    async fn get_session_trajectory(
+        &self,
+        Parameters(input): Parameters<GetSessionTrajectoryInput>,
+    ) -> Result<Json<TrajectoryResponse>, String> {
+        let response = with_db(move |conn| {
+            sessions::get_session_trajectory(
+                conn,
+                TrajectoryParams {
+                    id: input.id,
+                    limit: input.limit,
+                    after_step_index: input.after_step_index,
+                },
+            )
+        })
+        .await?;
+        response
+            .map(Json)
+            .ok_or_else(|| "session not found".to_string())
+    }
+
+    #[tool(
         name = "find_inefficient_sessions",
         description = "Rank indexed sessions by an efficiency signal to surface outliers: sort_by billable_tokens (default), error_rate (tool errors / tool calls), or cache_read_ratio (cache reads / output tokens). Returns counts and ratios only, no message text."
     )]
@@ -262,7 +299,9 @@ impl ServerHandler for SessionsServer {
              get_session_overview for a summary, and get_session_messages or \
              search_session_messages to read deeper. Use find_inefficient_sessions \
              to rank sessions by efficiency outliers (billable tokens, tool-error \
-             rate, cache-read ratio). Session ids are opaque handles.",
+             rate, cache-read ratio), then get_session_trajectory to drill into the \
+             step-by-step tool calls, token attribution, and errors of one session. \
+             Session ids are opaque handles.",
             )
     }
 }

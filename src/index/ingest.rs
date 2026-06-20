@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 use crate::agent::{self, AgentKind, SourceMessage, SourceSession};
+use crate::session::TrajectoryStep;
 
 #[derive(Debug, Default, Clone)]
 pub struct IngestStats {
@@ -94,15 +95,17 @@ pub fn scan_and_update(
                 continue;
             }
 
-            let (meta, messages) = match agent::extract_session(record) {
+            let extracted = match agent::extract_session(record) {
                 Ok(session) => session,
                 Err(e) => {
                     tracing::warn!("parse {}: {}", record.path.display(), e);
                     continue;
                 }
             };
-            upsert(conn, &meta)?;
-            replace_messages(conn, &meta.session_id, &messages)?;
+            let meta = &extracted.session;
+            upsert(conn, meta)?;
+            replace_messages(conn, &meta.session_id, &extracted.messages)?;
+            replace_trajectory(conn, &meta.session_id, meta.agent, &extracted.trajectory)?;
             stats.upserted += 1;
             stats.indexed += 1;
         }
@@ -146,6 +149,65 @@ fn replace_messages(conn: &Connection, session_id: &str, messages: &[SourceMessa
             message.turn_index as i64,
             message.role,
             message.text,
+        ])?;
+    }
+
+    Ok(())
+}
+
+fn replace_trajectory(
+    conn: &Connection,
+    session_id: &str,
+    agent: AgentKind,
+    steps: &[TrajectoryStep],
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM trajectory WHERE session_id = ?",
+        params![session_id],
+    )?;
+
+    let mut stmt = conn.prepare(
+        "INSERT INTO trajectory
+           (session_id, agent, step_index, role, tool_name, tool_input,
+            tool_input_bytes, tool_result_bytes, tool_result, is_error,
+            tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+            timestamp, is_sidechain, context_management,
+            is_api_error, api_error_status, retry_attempt, max_retries,
+            stop_reason, attribution_mcp_tool, attribution_mcp_server,
+            attribution_skill, duration_ms, permission_mode, parent_uuid)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
+    )?;
+    for step in steps {
+        stmt.execute(params![
+            session_id,
+            agent.as_str(),
+            step.step_index as i64,
+            step.role,
+            step.tool_name,
+            step.tool_input,
+            step.tool_input_bytes as i64,
+            step.tool_result_bytes as i64,
+            step.tool_result,
+            step.is_error as i64,
+            step.tokens_input as i64,
+            step.tokens_output as i64,
+            step.tokens_cache_read as i64,
+            step.tokens_cache_create as i64,
+            step.timestamp,
+            step.is_sidechain as i64,
+            step.context_management,
+            step.is_api_error as i64,
+            step.api_error_status,
+            step.retry_attempt,
+            step.max_retries,
+            step.stop_reason,
+            step.attribution_mcp_tool,
+            step.attribution_mcp_server,
+            step.attribution_skill,
+            step.duration_ms,
+            step.permission_mode,
+            step.parent_uuid,
         ])?;
     }
 
@@ -292,6 +354,40 @@ mod tests {
         );
         assert_eq!(fts_count(&conn, "oldphase"), 0);
         assert_eq!(fts_count(&conn, "newphase"), 1);
+    }
+
+    #[test]
+    fn replace_trajectory_overwrites_prior_steps() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "s1");
+        let step = |idx: u32, tool: &str| TrajectoryStep {
+            step_index: idx,
+            role: "assistant".to_string(),
+            tool_name: Some(tool.to_string()),
+            tool_input: Some("{}".to_string()),
+            tool_input_bytes: 2,
+            tokens_input: 10,
+            ..Default::default()
+        };
+
+        replace_trajectory(
+            &conn,
+            "s1",
+            AgentKind::Claude,
+            &[step(0, "Edit"), step(1, "Bash")],
+        )
+        .expect("first write");
+        replace_trajectory(&conn, "s1", AgentKind::Claude, &[step(0, "Read")]).expect("rewrite");
+
+        let rows: Vec<(i64, String, i64)> = conn
+            .prepare("SELECT step_index, tool_name, tokens_input FROM trajectory WHERE session_id='s1' ORDER BY step_index")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(rows, vec![(0, "Read".to_string(), 10)]);
     }
 
     #[test]
