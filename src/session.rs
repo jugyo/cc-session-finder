@@ -1,5 +1,6 @@
 //! Claude Code JSONL session file parser.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -72,6 +73,10 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
     let mut tokens_cache_read: u64 = 0;
     let mut tokens_cache_create: u64 = 0;
     let mut models = crate::agent::ModelCollector::default();
+    // One API response is split across multiple assistant rows (thinking /
+    // text / tool_use) that each repeat the same `usage`. Count each
+    // `message.id` only once so tokens are not multi-counted.
+    let mut counted_usage_ids: HashSet<String> = HashSet::new();
 
     let f = File::open(path)?;
     let reader = BufReader::new(f);
@@ -137,13 +142,20 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
                         models.observe(model);
                     }
                 }
-                if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
-                    tokens_input = tokens_input.saturating_add(usage_u64(u, "input_tokens"));
-                    tokens_output = tokens_output.saturating_add(usage_u64(u, "output_tokens"));
-                    tokens_cache_read =
-                        tokens_cache_read.saturating_add(usage_u64(u, "cache_read_input_tokens"));
-                    tokens_cache_create = tokens_cache_create
-                        .saturating_add(usage_u64(u, "cache_creation_input_tokens"));
+                let msg = v.get("message");
+                let already_counted = msg
+                    .and_then(|m| m.get("id"))
+                    .and_then(|id| id.as_str())
+                    .is_some_and(|id| !counted_usage_ids.insert(id.to_string()));
+                if !already_counted {
+                    if let Some(u) = msg.and_then(|m| m.get("usage")) {
+                        tokens_input = tokens_input.saturating_add(usage_u64(u, "input_tokens"));
+                        tokens_output = tokens_output.saturating_add(usage_u64(u, "output_tokens"));
+                        tokens_cache_read = tokens_cache_read
+                            .saturating_add(usage_u64(u, "cache_read_input_tokens"));
+                        tokens_cache_create = tokens_cache_create
+                            .saturating_add(usage_u64(u, "cache_creation_input_tokens"));
+                    }
                 }
             }
             "pr-link" => {
@@ -382,6 +394,44 @@ mod tests {
 
         assert_eq!(meta.model, None);
         assert!(meta.models.is_empty());
+    }
+
+    #[test]
+    fn counts_usage_once_per_message_id() {
+        // Three assistant rows (thinking / text / tool_use) split from one API
+        // response repeat the same id and usage; a fourth row is a distinct
+        // response. Usage must sum once per id, not once per row.
+        let path = write_fixture(
+            "dedup",
+            r#"{"type":"assistant","message":{"role":"assistant","id":"msg_A","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50},"content":[{"type":"thinking","thinking":"x"}]}}
+{"type":"assistant","message":{"role":"assistant","id":"msg_A","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50},"content":[{"type":"text","text":"y"}]}}
+{"type":"assistant","message":{"role":"assistant","id":"msg_A","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50},"content":[{"type":"tool_use","name":"Edit"}]}}
+{"type":"assistant","message":{"role":"assistant","id":"msg_B","model":"claude-opus-4-8","usage":{"input_tokens":5,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":1},"content":[{"type":"text","text":"z"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(meta.tokens_input, 105);
+        assert_eq!(meta.tokens_output, 12);
+        assert_eq!(meta.tokens_cache_read, 1003);
+        assert_eq!(meta.tokens_cache_create, 51);
+    }
+
+    #[test]
+    fn counts_usage_for_rows_without_message_id() {
+        // Rows lacking an id cannot be deduped, so each is counted.
+        let path = write_fixture(
+            "no-id",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"a"}]}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"b"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(meta.tokens_input, 14);
+        assert_eq!(meta.tokens_output, 6);
     }
 
     #[test]
