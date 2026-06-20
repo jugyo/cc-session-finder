@@ -117,6 +117,64 @@ pub fn fts_messages_in_session(
     Ok(out)
 }
 
+/// Raw per-session efficiency columns backing
+/// [`super::find_inefficient_sessions`]. Holds only counts and token buckets —
+/// never message text or tool bodies.
+pub struct EfficiencyRow {
+    pub session_id: String,
+    pub agent: String,
+    pub ai_title: Option<String>,
+    pub cwd: String,
+    pub mtime: i64,
+    pub msg_count: Option<u32>,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_create: u64,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
+}
+
+/// Fetch efficiency columns for every session, optionally restricted to those
+/// updated at or after `since` (Unix seconds).
+pub fn efficiency_rows(conn: &Connection, since: Option<i64>) -> Result<Vec<EfficiencyRow>> {
+    let mut sql = String::from(
+        "SELECT session_id, agent, ai_title, cwd, mtime, msg_count,
+                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+                tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms
+         FROM sessions",
+    );
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(since) = since {
+        sql.push_str(" WHERE mtime >= ?1");
+        bound.push(Box::new(since));
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(params_iter.as_slice(), |r| {
+        Ok(EfficiencyRow {
+            session_id: r.get(0)?,
+            agent: r.get(1)?,
+            ai_title: r.get(2)?,
+            cwd: r.get(3)?,
+            mtime: r.get(4)?,
+            msg_count: r.get::<_, Option<i64>>(5)?.map(|n| n.max(0) as u32),
+            tokens_input: r.get::<_, i64>(6).unwrap_or(0).max(0) as u64,
+            tokens_output: r.get::<_, i64>(7).unwrap_or(0).max(0) as u64,
+            tokens_cache_read: r.get::<_, i64>(8).unwrap_or(0).max(0) as u64,
+            tokens_cache_create: r.get::<_, i64>(9).unwrap_or(0).max(0) as u64,
+            tool_call_count: r.get::<_, i64>(10).unwrap_or(0).max(0) as u64,
+            tool_error_count: r.get::<_, i64>(11).unwrap_or(0).max(0) as u64,
+            thinking_tokens: r.get::<_, i64>(12).unwrap_or(0).max(0) as u64,
+            wall_clock_ms: r.get::<_, i64>(13).unwrap_or(0),
+        })
+    })?;
+    rows.collect::<Result<_, _>>().map_err(Into::into)
+}
+
 /// A page of messages plus whether more exist on either side of the returned
 /// window within the full session.
 pub struct MessagePage {

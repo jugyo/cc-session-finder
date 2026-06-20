@@ -59,6 +59,10 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             tokens_cache_create: meta.tokens_cache_create,
             model: meta.model,
             models: meta.models,
+            tool_call_count: meta.tool_call_count,
+            tool_error_count: meta.tool_error_count,
+            thinking_tokens: meta.thinking_tokens,
+            wall_clock_ms: meta.wall_clock_ms,
         },
         messages,
     ))

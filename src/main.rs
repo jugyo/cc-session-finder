@@ -75,6 +75,8 @@ enum SessionsCmd {
     Messages(SessionsMessagesArgs),
     /// Search visible messages within one session.
     SearchMessages(SessionsSearchMessagesArgs),
+    /// Rank sessions by an efficiency signal to surface outliers.
+    Inefficient(SessionsInefficientArgs),
 }
 
 #[derive(Debug, Args)]
@@ -151,6 +153,27 @@ struct SessionsSearchMessagesArgs {
 enum OrderArg {
     Asc,
     Desc,
+}
+
+#[derive(Debug, Args)]
+struct SessionsInefficientArgs {
+    /// Ranking signal.
+    #[arg(long, value_enum, default_value_t = SortByArg::BillableTokens)]
+    sort_by: SortByArg,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
+    since: Option<String>,
+    #[arg(long)]
+    no_update: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SortByArg {
+    BillableTokens,
+    ErrorRate,
+    CacheReadRatio,
 }
 
 #[derive(Debug, Args)]

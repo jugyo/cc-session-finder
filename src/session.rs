@@ -30,6 +30,10 @@ pub struct SessionMeta {
     pub tokens_cache_create: u64,
     pub model: Option<String>,
     pub models: Vec<String>,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
 }
 
 /// Indexable message text extracted from one JSONL record.
@@ -72,6 +76,11 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
     let mut tokens_output: u64 = 0;
     let mut tokens_cache_read: u64 = 0;
     let mut tokens_cache_create: u64 = 0;
+    let mut tool_call_count: u64 = 0;
+    let mut tool_error_count: u64 = 0;
+    let mut thinking_chars: u64 = 0;
+    let mut first_ts_ms: Option<i64> = None;
+    let mut last_ts_ms: Option<i64> = None;
     let mut models = crate::agent::ModelCollector::default();
     // One API response is split across multiple assistant rows (thinking /
     // text / tool_use) that each repeat the same `usage`. Count each
@@ -91,6 +100,15 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        if let Some(ms) = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(parse_timestamp_ms)
+        {
+            first_ts_ms = Some(first_ts_ms.map_or(ms, |first| first.min(ms)));
+            last_ts_ms = Some(last_ts_ms.map_or(ms, |last| last.max(ms)));
+        }
 
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match ty {
@@ -118,6 +136,9 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
                         first_prompt = Some(truncate(&text, 500));
                     }
                 }
+                if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
+                    tool_error_count = tool_error_count.saturating_add(count_tool_errors(content));
+                }
             }
             "assistant" => {
                 msg_count += 1;
@@ -141,6 +162,10 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
                     if is_concrete_model(model) {
                         models.observe(model);
                     }
+                }
+                if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
+                    tool_call_count = tool_call_count.saturating_add(count_tool_uses(content));
+                    thinking_chars = thinking_chars.saturating_add(count_thinking_chars(content));
                 }
                 let msg = v.get("message");
                 let already_counted = msg
@@ -177,6 +202,15 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
 
     let cwd = cwd.unwrap_or_else(|| crate::paths::decode_dir_hint(&project_dir));
 
+    // No per-block token breakdown exists in the JSONL, so approximate thinking
+    // output from its character length (~4 chars/token). Used only as a coarse
+    // ratio signal, where the constant factor cancels out.
+    let thinking_tokens = thinking_chars / 4;
+    let wall_clock_ms = match (first_ts_ms, last_ts_ms) {
+        (Some(first), Some(last)) => (last - first).max(0),
+        _ => 0,
+    };
+
     Ok(SessionMeta {
         session_id: file_name,
         project_dir,
@@ -197,6 +231,10 @@ pub fn extract_from_file(path: &Path) -> Result<SessionMeta> {
         tokens_cache_create,
         model: models.latest(),
         models: models.into_models(),
+        tool_call_count,
+        tool_error_count,
+        thinking_tokens,
+        wall_clock_ms,
     })
 }
 
@@ -237,6 +275,56 @@ pub fn extract_indexable_messages_from_file(path: &Path) -> Result<Vec<Indexable
 
 fn usage_u64(usage: &Value, key: &str) -> u64 {
     usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+/// Parse an RFC3339 transcript timestamp into Unix milliseconds.
+fn parse_timestamp_ms(value: &str) -> Option<i64> {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::parse(value, &Rfc3339)
+        .ok()
+        .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// Count `tool_use` blocks in an assistant message's content array.
+fn count_tool_uses(content: &Value) -> u64 {
+    content_blocks(content, "tool_use")
+}
+
+/// Count `tool_result` blocks flagged `is_error: true` in a user message's
+/// content array.
+fn count_tool_errors(content: &Value) -> u64 {
+    let Some(parts) = content.as_array() else {
+        return 0;
+    };
+    parts
+        .iter()
+        .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+        .filter(|part| part.get("is_error").and_then(|e| e.as_bool()) == Some(true))
+        .count() as u64
+}
+
+/// Sum the character length of `thinking` blocks in an assistant message's
+/// content array.
+fn count_thinking_chars(content: &Value) -> u64 {
+    let Some(parts) = content.as_array() else {
+        return 0;
+    };
+    parts
+        .iter()
+        .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+        .filter_map(|part| part.get("thinking").and_then(|t| t.as_str()))
+        .map(|text| text.chars().count() as u64)
+        .sum()
+}
+
+fn content_blocks(content: &Value, block_type: &str) -> u64 {
+    let Some(parts) = content.as_array() else {
+        return 0;
+    };
+    parts
+        .iter()
+        .filter(|part| part.get("type").and_then(|t| t.as_str()) == Some(block_type))
+        .count() as u64
 }
 
 fn indexable_message_text(v: &Value) -> Option<(String, String)> {
@@ -432,6 +520,27 @@ mod tests {
 
         assert_eq!(meta.tokens_input, 14);
         assert_eq!(meta.tokens_output, 6);
+    }
+
+    #[test]
+    fn derives_tool_thinking_and_wall_clock_metrics() {
+        let path = write_fixture(
+            "derived",
+            r#"{"type":"user","timestamp":"2026-06-20T01:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","timestamp":"2026-06-20T01:00:01.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"12345678"}]}}
+{"type":"assistant","timestamp":"2026-06-20T01:00:02.000Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit"},{"type":"tool_use","name":"Bash"}]}}
+{"type":"user","timestamp":"2026-06-20T01:00:05.500Z","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"boom"},{"type":"tool_result","content":"ok"}]}}"#,
+        );
+
+        let meta = extract_from_file(&path).expect("meta");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(meta.tool_call_count, 2);
+        assert_eq!(meta.tool_error_count, 1);
+        // 8 thinking chars / 4 ≈ 2 tokens.
+        assert_eq!(meta.thinking_tokens, 2);
+        // 01:00:00.000 → 01:00:05.500 = 5500 ms.
+        assert_eq!(meta.wall_clock_ms, 5_500);
     }
 
     #[test]

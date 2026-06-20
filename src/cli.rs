@@ -10,8 +10,12 @@ use serde::Serialize;
 use crate::index;
 use crate::index::ingest::{IngestStats, Progress};
 use crate::index::search::{Hit, TimeRange};
-use crate::sessions::{self, MessageOrder, MessagesParams, SearchParams};
-use crate::{Format, IndexArgs, ListArgs, OrderArg, ResumeArgs, SearchArgs, SessionsCmd, ShowArgs};
+use crate::sessions::{
+    self, InefficientParams, InefficientSort, MessageOrder, MessagesParams, SearchParams,
+};
+use crate::{
+    Format, IndexArgs, ListArgs, OrderArg, ResumeArgs, SearchArgs, SessionsCmd, ShowArgs, SortByArg,
+};
 
 #[derive(Serialize)]
 struct OutputDoc<'a> {
@@ -220,6 +224,23 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
                 Some(response) => print_json(&response),
                 None => session_not_found(&args.id),
             }
+        }
+        SessionsCmd::Inefficient(args) => {
+            let conn = maybe_update(false, args.no_update)?;
+            let time_range = parse_time_range(args.since.as_deref(), None)?;
+            let response = sessions::find_inefficient_sessions(
+                &conn,
+                InefficientParams {
+                    since: time_range.since,
+                    limit: Some(args.limit),
+                    sort_by: match args.sort_by {
+                        SortByArg::BillableTokens => InefficientSort::BillableTokens,
+                        SortByArg::ErrorRate => InefficientSort::ErrorRate,
+                        SortByArg::CacheReadRatio => InefficientSort::CacheReadRatio,
+                    },
+                },
+            )?;
+            print_json(&response)
         }
     }
 }

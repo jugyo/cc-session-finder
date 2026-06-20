@@ -15,11 +15,12 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentKind;
 use crate::index::search::{self, Hit, TimeRange};
 
 pub use models::{
-    MessageSearchResponse, MessagesResponse, OverviewResponse, OverviewSession, SearchResponse,
-    SessionCard, SessionMessage, SessionRef,
+    InefficientSession, InefficientSessionsResponse, MessageSearchResponse, MessagesResponse,
+    OverviewResponse, OverviewSession, SearchResponse, SessionCard, SessionMessage, SessionRef,
 };
 pub use query::MessageOrder;
 
@@ -50,6 +51,44 @@ pub struct MessagesParams {
     pub order: MessageOrder,
     pub after_message_index: Option<u32>,
     pub before_message_index: Option<u32>,
+}
+
+/// Sort key for [`find_inefficient_sessions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InefficientSort {
+    BillableTokens,
+    ErrorRate,
+    CacheReadRatio,
+}
+
+impl InefficientSort {
+    /// Parse a `sort_by` string, defaulting to `BillableTokens` when absent.
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim) {
+            None | Some("") | Some("billable_tokens") => Ok(Self::BillableTokens),
+            Some("error_rate") => Ok(Self::ErrorRate),
+            Some("cache_read_ratio") => Ok(Self::CacheReadRatio),
+            Some(other) => bail!(
+                "invalid sort_by {other:?}; expected billable_tokens, error_rate, or cache_read_ratio"
+            ),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BillableTokens => "billable_tokens",
+            Self::ErrorRate => "error_rate",
+            Self::CacheReadRatio => "cache_read_ratio",
+        }
+    }
+}
+
+/// Inputs for [`find_inefficient_sessions`].
+#[derive(Debug, Clone)]
+pub struct InefficientParams {
+    pub since: Option<i64>,
+    pub limit: Option<usize>,
+    pub sort_by: InefficientSort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +211,64 @@ pub fn search_sessions(conn: &Connection, params: SearchParams) -> Result<Search
         has_more,
         next_cursor,
         results,
+    })
+}
+
+/// Rank sessions by an efficiency signal to surface outliers (heavy billable
+/// usage, high tool-error rate, or runaway cache re-reads). Read-only: returns
+/// counts and ratios only, never message text or tool bodies.
+pub fn find_inefficient_sessions(
+    conn: &Connection,
+    params: InefficientParams,
+) -> Result<InefficientSessionsResponse> {
+    let limit = cap_limit(params.limit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_CAP);
+    let mut sessions: Vec<InefficientSession> = query::efficiency_rows(conn, params.since)?
+        .into_iter()
+        .map(|row| {
+            let billable_tokens = row
+                .tokens_input
+                .saturating_add(row.tokens_output)
+                .saturating_add(row.tokens_cache_create);
+            let cache_read_ratio = row.tokens_cache_read as f64 / row.tokens_output.max(1) as f64;
+            let error_rate = row.tool_error_count as f64 / row.tool_call_count.max(1) as f64;
+            InefficientSession {
+                id: row.session_id,
+                agent: AgentKind::from_db(&row.agent).unwrap_or(AgentKind::Claude),
+                title: row.ai_title,
+                cwd: row.cwd,
+                updated_at: format_updated_at(row.mtime),
+                billable_tokens,
+                tokens_output: row.tokens_output,
+                tokens_cache_read: row.tokens_cache_read,
+                cache_read_ratio,
+                tool_call_count: row.tool_call_count,
+                tool_error_count: row.tool_error_count,
+                error_rate,
+                thinking_tokens: row.thinking_tokens,
+                wall_clock_ms: row.wall_clock_ms,
+                message_count: row.msg_count.unwrap_or(0),
+            }
+        })
+        .collect();
+
+    sessions.sort_by(|a, b| {
+        let key = |s: &InefficientSession| match params.sort_by {
+            InefficientSort::BillableTokens => s.billable_tokens as f64,
+            InefficientSort::ErrorRate => s.error_rate,
+            InefficientSort::CacheReadRatio => s.cache_read_ratio,
+        };
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.billable_tokens.cmp(&a.billable_tokens))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    sessions.truncate(limit);
+
+    Ok(InefficientSessionsResponse {
+        count: sessions.len(),
+        sort_by: params.sort_by.as_str().to_string(),
+        results: sessions,
     })
 }
 

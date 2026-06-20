@@ -15,8 +15,9 @@ use serde::Deserialize;
 
 use crate::index;
 use crate::sessions::{
-    self, MessageOrder, MessageSearchResponse, MessagesParams, MessagesResponse, OverviewResponse,
-    SearchParams, SearchResponse,
+    self, InefficientParams, InefficientSessionsResponse, InefficientSort, MessageOrder,
+    MessageSearchResponse, MessagesParams, MessagesResponse, OverviewResponse, SearchParams,
+    SearchResponse,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -81,6 +82,21 @@ struct SearchSessionMessagesInput {
     /// Max matches to return (default 10, capped at 30).
     #[serde(default)]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
+struct FindInefficientSessionsInput {
+    /// Lower mtime bound: a duration like "7d", a date, RFC3339, or Unix time.
+    #[serde(default)]
+    since: Option<String>,
+    /// Max sessions to return (default 20, capped at 100).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Ranking signal: "billable_tokens" (default), "error_rate", or
+    /// "cache_read_ratio".
+    #[serde(default)]
+    sort_by: Option<String>,
 }
 
 #[derive(Clone)]
@@ -209,6 +225,31 @@ impl SessionsServer {
             .map(Json)
             .ok_or_else(|| "session not found".to_string())
     }
+
+    #[tool(
+        name = "find_inefficient_sessions",
+        description = "Rank indexed sessions by an efficiency signal to surface outliers: sort_by billable_tokens (default), error_rate (tool errors / tool calls), or cache_read_ratio (cache reads / output tokens). Returns counts and ratios only, no message text."
+    )]
+    async fn find_inefficient_sessions(
+        &self,
+        Parameters(input): Parameters<FindInefficientSessionsInput>,
+    ) -> Result<Json<InefficientSessionsResponse>, String> {
+        let response = with_db(move |conn| {
+            index::ingest::scan_and_update(conn, false, &index::ingest::NoopProgress)?;
+            let time_range = crate::cli::parse_time_range(input.since.as_deref(), None)?;
+            let sort_by = InefficientSort::parse(input.sort_by.as_deref())?;
+            sessions::find_inefficient_sessions(
+                conn,
+                InefficientParams {
+                    since: time_range.since,
+                    limit: input.limit,
+                    sort_by,
+                },
+            )
+        })
+        .await?;
+        Ok(Json(response))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -219,7 +260,9 @@ impl ServerHandler for SessionsServer {
                 "Read-only search over locally indexed Claude Code and Codex sessions. \
              Call search_sessions first to find candidate sessions, then \
              get_session_overview for a summary, and get_session_messages or \
-             search_session_messages to read deeper. Session ids are opaque handles.",
+             search_session_messages to read deeper. Use find_inefficient_sessions \
+             to rank sessions by efficiency outliers (billable tokens, tool-error \
+             rate, cache-read ratio). Session ids are opaque handles.",
             )
     }
 }

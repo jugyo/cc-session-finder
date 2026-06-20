@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -44,7 +44,11 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             tokens_cache_read   INTEGER NOT NULL DEFAULT 0,
             tokens_cache_create INTEGER NOT NULL DEFAULT 0,
             model         TEXT,
-            models_json   TEXT NOT NULL DEFAULT '[]'
+            models_json   TEXT NOT NULL DEFAULT '[]',
+            tool_call_count  INTEGER NOT NULL DEFAULT 0,
+            tool_error_count INTEGER NOT NULL DEFAULT 0,
+            thinking_tokens  INTEGER NOT NULL DEFAULT 0,
+            wall_clock_ms    INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_mtime ON sessions(mtime DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_cwd   ON sessions(cwd);

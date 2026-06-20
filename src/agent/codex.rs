@@ -120,6 +120,12 @@ pub fn extract_session(record: &SourceRecord) -> Result<(SourceSession, Vec<Sour
             tokens_cache_create: 0,
             model: models.latest(),
             models: models.into_models(),
+            // Derived efficiency metrics are Claude-only for now; the Codex
+            // rollout schema differs and is out of scope for this scaffold.
+            tool_call_count: 0,
+            tool_error_count: 0,
+            thinking_tokens: 0,
+            wall_clock_ms: 0,
         },
         {
             for (turn_index, message) in messages.iter_mut().enumerate() {

@@ -137,6 +137,10 @@ scores.
 - `get_session_messages` — page through a session's visible messages by
   `message_index`.
 - `search_session_messages` — search visible messages within one session.
+- `find_inefficient_sessions` — rank sessions by an efficiency signal to surface
+  outliers. `sort_by` is `billable_tokens` (default), `error_rate` (tool errors
+  ÷ tool calls), or `cache_read_ratio` (cache reads ÷ output tokens). Returns
+  per-session counts and ratios only — no message text or tool bodies.
 
 Session IDs are opaque handles; pass the `id` from a `search_sessions` result to
 the other tools.
@@ -170,7 +174,13 @@ cc-session-finder sessions search --limit 20 --cursor <next_cursor>
 cc-session-finder sessions overview <id>
 cc-session-finder sessions messages <id> --order asc --limit 10
 cc-session-finder sessions search-messages <id> "schema" --limit 10
+cc-session-finder sessions inefficient --sort-by cache-read-ratio --limit 20
 ```
+
+Each indexed session also carries derived analysis columns — `tool_call_count`,
+`tool_error_count`, `thinking_tokens`, and `wall_clock_ms` (last − first
+transcript timestamp) — surfaced in `show`, the `sessions` overview/cards
+metadata, and `find_inefficient_sessions`.
 
 ## Development
 

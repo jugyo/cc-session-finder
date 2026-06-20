@@ -584,3 +584,119 @@ fn paged_messages_skip_internal_marker_text() {
         .iter()
         .all(|m| !m.text.contains("system-reminder")));
 }
+
+#[allow(clippy::too_many_arguments)]
+fn insert_efficiency_session(
+    conn: &Connection,
+    session_id: &str,
+    mtime: i64,
+    tokens_input: i64,
+    tokens_output: i64,
+    tokens_cache_read: i64,
+    tokens_cache_create: i64,
+    tool_calls: i64,
+    tool_errors: i64,
+) {
+    conn.execute(
+        "INSERT INTO sessions
+           (session_id, agent, native_session_id, cwd, mtime, size, file_path,
+            tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
+            tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms)
+         VALUES (?1, 'claude', ?2, '/repo', ?3, 0, '/f.jsonl',
+                 ?4, ?5, ?6, ?7, ?8, ?9, 0, 0)",
+        params![
+            session_id,
+            format!("native-{session_id}"),
+            mtime,
+            tokens_input,
+            tokens_output,
+            tokens_cache_read,
+            tokens_cache_create,
+            tool_calls,
+            tool_errors
+        ],
+    )
+    .expect("insert efficiency session");
+}
+
+#[test]
+fn find_inefficient_sessions_ranks_by_each_signal() {
+    let conn = setup();
+    // billable = input + output + cache_create.
+    insert_efficiency_session(&conn, "billable", 1000, 5_000, 2_000, 10, 1_000, 4, 0);
+    // huge cache_read vs tiny output → high cache_read_ratio.
+    insert_efficiency_session(&conn, "cache", 1000, 10, 20, 1_000_000, 0, 2, 0);
+    // 3 of 4 tool calls errored → high error_rate.
+    insert_efficiency_session(&conn, "errors", 1000, 10, 10, 0, 0, 4, 3);
+
+    let by_billable = find_inefficient_sessions(
+        &conn,
+        InefficientParams {
+            since: None,
+            limit: Some(10),
+            sort_by: InefficientSort::BillableTokens,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_billable.sort_by, "billable_tokens");
+    assert_eq!(by_billable.results[0].id, "billable");
+    assert_eq!(by_billable.results[0].billable_tokens, 8_000);
+
+    let by_cache = find_inefficient_sessions(
+        &conn,
+        InefficientParams {
+            since: None,
+            limit: Some(10),
+            sort_by: InefficientSort::CacheReadRatio,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_cache.results[0].id, "cache");
+    assert_eq!(by_cache.results[0].cache_read_ratio, 1_000_000.0 / 20.0);
+
+    let by_error = find_inefficient_sessions(
+        &conn,
+        InefficientParams {
+            since: None,
+            limit: Some(10),
+            sort_by: InefficientSort::ErrorRate,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_error.results[0].id, "errors");
+    assert_eq!(by_error.results[0].error_rate, 0.75);
+}
+
+#[test]
+fn find_inefficient_sessions_honors_since_and_limit() {
+    let conn = setup();
+    insert_efficiency_session(&conn, "old", 1_000, 100, 100, 0, 0, 0, 0);
+    insert_efficiency_session(&conn, "new_a", 5_000, 900, 0, 0, 0, 0, 0);
+    insert_efficiency_session(&conn, "new_b", 6_000, 800, 0, 0, 0, 0, 0);
+
+    let response = find_inefficient_sessions(
+        &conn,
+        InefficientParams {
+            since: Some(4_000),
+            limit: Some(1),
+            sort_by: InefficientSort::BillableTokens,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(response.count, 1);
+    assert_eq!(response.results[0].id, "new_a");
+}
+
+#[test]
+fn inefficient_sort_parse_rejects_unknown() {
+    assert_eq!(
+        InefficientSort::parse(None).unwrap(),
+        InefficientSort::BillableTokens
+    );
+    assert_eq!(
+        InefficientSort::parse(Some("error_rate")).unwrap(),
+        InefficientSort::ErrorRate
+    );
+    assert!(InefficientSort::parse(Some("bogus")).is_err());
+}

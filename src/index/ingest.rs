@@ -160,8 +160,10 @@ fn upsert(conn: &Connection, m: &SourceSession) -> Result<()> {
                mtime, size, msg_count, file_path,
                git_branch, pr_number, pr_url, pr_repo,
                tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
-               model, models_json)
-           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+               model, models_json,
+               tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
+                   ?22,?23,?24,?25)
            ON CONFLICT(session_id) DO UPDATE SET
               agent=excluded.agent,
               native_session_id=excluded.native_session_id,
@@ -182,7 +184,11 @@ fn upsert(conn: &Connection, m: &SourceSession) -> Result<()> {
               tokens_cache_read=excluded.tokens_cache_read,
               tokens_cache_create=excluded.tokens_cache_create,
               model=excluded.model,
-              models_json=excluded.models_json
+              models_json=excluded.models_json,
+              tool_call_count=excluded.tool_call_count,
+              tool_error_count=excluded.tool_error_count,
+              thinking_tokens=excluded.thinking_tokens,
+              wall_clock_ms=excluded.wall_clock_ms
         "#,
         params![
             m.session_id,
@@ -206,6 +212,10 @@ fn upsert(conn: &Connection, m: &SourceSession) -> Result<()> {
             m.tokens_cache_create as i64,
             m.model.as_deref(),
             serde_json::to_string(&m.models).unwrap_or_else(|_| "[]".to_string()),
+            m.tool_call_count as i64,
+            m.tool_error_count as i64,
+            m.thinking_tokens as i64,
+            m.wall_clock_ms,
         ],
     )
     .with_context(|| format!("upsert {}", m.session_id))?;

@@ -98,6 +98,10 @@ pub struct SessionMetadata {
     pub models: Vec<String>,
     pub tokens_total: u64,
     pub message_count: u32,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
 }
 
 /// Compact session card returned by `search_sessions`.
@@ -175,6 +179,43 @@ pub struct MessageSearchResponse {
     pub count: usize,
 }
 
+/// One row of [`super::find_inefficient_sessions`]: a session reduced to the
+/// efficiency signals used to surface outliers. Carries no message text or tool
+/// bodies, only counts and ratios.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
+pub struct InefficientSession {
+    pub id: String,
+    pub agent: AgentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub cwd: String,
+    pub updated_at: String,
+    /// `input + output + cache_create`. Excludes the cheap `cache_read` bucket,
+    /// which is surfaced separately via `cache_read_ratio`.
+    pub billable_tokens: u64,
+    pub tokens_output: u64,
+    pub tokens_cache_read: u64,
+    /// `cache_read / max(output, 1)`. Large values flag sessions that re-read a
+    /// big context for little new output (e.g. tight sub-agent loops).
+    pub cache_read_ratio: f64,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    /// `tool_error_count / max(tool_call_count, 1)`.
+    pub error_rate: f64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
+    pub message_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
+pub struct InefficientSessionsResponse {
+    pub sort_by: String,
+    pub results: Vec<InefficientSession>,
+    pub count: usize,
+}
+
 /// Clamp a requested limit to `[1, max]`, falling back to `default` when not
 /// provided or zero.
 pub(crate) fn cap_limit(requested: Option<usize>, default: usize, max: usize) -> usize {
@@ -227,6 +268,10 @@ pub(crate) fn metadata_from_hit(hit: &Hit, message_count: u32) -> SessionMetadat
         models: hit.models.clone(),
         tokens_total: tokens_total(hit),
         message_count,
+        tool_call_count: hit.tool_call_count,
+        tool_error_count: hit.tool_error_count,
+        thinking_tokens: hit.thinking_tokens,
+        wall_clock_ms: hit.wall_clock_ms,
     }
 }
 

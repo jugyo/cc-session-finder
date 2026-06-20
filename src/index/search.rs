@@ -40,6 +40,10 @@ pub struct Hit {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -312,6 +316,7 @@ fn metadata_hits(
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                     s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
+                    s.tool_call_count, s.tool_error_count, s.thinking_tokens, s.wall_clock_ms,
                     bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
              FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
              WHERE sessions_fts MATCH ?"
@@ -342,6 +347,7 @@ fn metadata_hits(
                 git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 agent, native_session_id, source_group, model, models_json,
+                tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms,
                 bm25_rank, keyword_score, recency, freshness_boost, relevance_score, final_score
          FROM scored
          ORDER BY mtime DESC, bm25_rank ASC, session_id ASC"
@@ -390,6 +396,7 @@ fn message_hits(
                     s.file_path, s.git_branch, s.pr_number, s.pr_url, s.pr_repo,
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                     s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
+                    s.tool_call_count, s.tool_error_count, s.thinking_tokens, s.wall_clock_ms,
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
@@ -413,6 +420,7 @@ fn message_hits(
                 git_branch, pr_number, pr_url, pr_repo,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 agent, native_session_id, source_group, model, models_json,
+                tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms,
                 rank, role, snippet, recency, 1.0 + recency * {FRESHNESS_BOOST_WEIGHT} AS freshness_boost
          FROM scored
          ORDER BY rank ASC, mtime DESC, session_id ASC, turn_index ASC",
@@ -517,9 +525,10 @@ pub(crate) fn build_fts_query(q: &str) -> String {
 const HIT_COLS: &str = "session_id, ai_title, cwd, mtime, msg_count, first_prompt, file_path, \
      git_branch, pr_number, pr_url, pr_repo, \
      tokens_input, tokens_output, tokens_cache_read, tokens_cache_create, \
-     agent, native_session_id, source_group, model, models_json";
+     agent, native_session_id, source_group, model, models_json, \
+     tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms";
 
-const HIT_COL_COUNT: usize = 20;
+const HIT_COL_COUNT: usize = 24;
 const COL_BM25_RANK: usize = HIT_COL_COUNT;
 const COL_KEYWORD_SCORE: usize = HIT_COL_COUNT + 1;
 const COL_RECENCY: usize = HIT_COL_COUNT + 2;
@@ -578,6 +587,10 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         tokens_cache_create: r.get::<_, i64>(14).unwrap_or(0).max(0) as u64,
         model,
         models,
+        tool_call_count: r.get::<_, i64>(20).unwrap_or(0).max(0) as u64,
+        tool_error_count: r.get::<_, i64>(21).unwrap_or(0).max(0) as u64,
+        thinking_tokens: r.get::<_, i64>(22).unwrap_or(0).max(0) as u64,
+        wall_clock_ms: r.get::<_, i64>(23).unwrap_or(0),
         snippet: None,
         snippet_role: None,
         snippet_message_count: None,

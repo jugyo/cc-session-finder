@@ -69,6 +69,10 @@ pub struct SourceSession {
     pub tokens_cache_create: u64,
     pub model: Option<String>,
     pub models: Vec<String>,
+    pub tool_call_count: u64,
+    pub tool_error_count: u64,
+    pub thinking_tokens: u64,
+    pub wall_clock_ms: i64,
 }
 
 /// Collects model names observed across a session in order, keeping the set
