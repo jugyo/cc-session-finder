@@ -4,7 +4,7 @@ use rusqlite::Connection;
 /// Bump this whenever the schema or extracted-column set changes. On open the
 /// DB's `user_version` is compared; if it differs we drop all tables and let
 /// `ensure` rebuild + the next `scan_and_update` re-populate from JSONL.
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 
 pub fn ensure(conn: &Connection) -> Result<()> {
     let current: u32 = conn
@@ -49,10 +49,12 @@ pub fn ensure(conn: &Connection) -> Result<()> {
             tool_call_count  INTEGER NOT NULL DEFAULT 0,
             tool_error_count INTEGER NOT NULL DEFAULT 0,
             thinking_tokens  INTEGER NOT NULL DEFAULT 0,
-            wall_clock_ms    INTEGER NOT NULL DEFAULT 0
+            wall_clock_ms    INTEGER NOT NULL DEFAULT 0,
+            archived_at      INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_mtime ON sessions(mtime DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_cwd   ON sessions(cwd);
+        CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived_at);
 
         CREATE TABLE IF NOT EXISTS messages (
             id          INTEGER PRIMARY KEY,
@@ -266,6 +268,14 @@ mod tests {
 
         assert!(columns.iter().any(|column| column == "model"));
         assert!(columns.iter().any(|column| column == "models_json"));
+    }
+
+    #[test]
+    fn session_schema_tracks_archive_state() {
+        let conn = open_indexed_db();
+        let columns = table_columns(&conn, "sessions");
+
+        assert!(columns.iter().any(|column| column == "archived_at"));
     }
 
     #[test]

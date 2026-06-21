@@ -13,8 +13,25 @@ use crate::session::TrajectoryStep;
 pub struct IngestStats {
     pub indexed: u32,
     pub upserted: u32,
-    pub deleted: u32,
+    /// Sessions whose source vanished and were flagged as archived this scan.
+    pub archived: u32,
+    /// Previously archived sessions whose source reappeared this scan.
+    pub unarchived: u32,
     pub total: u32,
+}
+
+#[derive(Clone, Copy)]
+struct KnownRow {
+    mtime: i64,
+    size: i64,
+    archived: bool,
+}
+
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Progress callback shape used by both CLI and TUI front-ends.
@@ -41,23 +58,32 @@ pub fn scan_and_update(
 ) -> Result<IngestStats> {
     let mut stats = IngestStats::default();
 
-    let mut known: HashMap<(AgentKind, String), (i64, i64)> = HashMap::new();
+    let mut known: HashMap<(AgentKind, String), KnownRow> = HashMap::new();
     {
-        let mut q = conn.prepare("SELECT agent, session_id, mtime, size FROM sessions")?;
+        let mut q =
+            conn.prepare("SELECT agent, session_id, mtime, size, archived_at FROM sessions")?;
         let rows = q.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, i64>(3)?,
+                r.get::<_, Option<i64>>(4)?,
             ))
         })?;
         for r in rows {
-            let (agent, id, mt, sz) = r?;
+            let (agent, id, mt, sz, archived_at) = r?;
             let Some(agent) = AgentKind::from_db(&agent) else {
                 continue;
             };
-            known.insert((agent, id), (mt, sz));
+            known.insert(
+                (agent, id),
+                KnownRow {
+                    mtime: mt,
+                    size: sz,
+                    archived: archived_at.is_some(),
+                },
+            );
         }
     }
 
@@ -88,7 +114,7 @@ pub fn scan_and_update(
             let key = (*kind, record.session_id.clone());
             let stale = reindex
                 || match known.get(&key) {
-                    Some((m, s)) => *m != record.mtime || *s != record.size,
+                    Some(row) => row.mtime != record.mtime || row.size != record.size,
                     None => true,
                 };
             if !stale {
@@ -111,26 +137,78 @@ pub fn scan_and_update(
         }
     }
 
-    let to_delete: Vec<(AgentKind, String)> = known
-        .keys()
-        .filter(|(kind, id)| {
-            seen_by_agent
-                .get(kind)
-                .map(|seen| !seen.contains(id))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    for (kind, id) in &to_delete {
-        conn.execute(
-            "DELETE FROM sessions WHERE agent = ?1 AND session_id = ?2",
-            params![kind.as_str(), id],
-        )?;
-        stats.deleted += 1;
-    }
+    let (archived, unarchived) =
+        reconcile_archive_state(conn, &known, &seen_by_agent, now_unix_secs())?;
+    stats.archived = archived;
+    stats.unarchived = unarchived;
 
     progress.on_done(&stats);
     Ok(stats)
+}
+
+/// Reconcile each known session's archive flag against what the scan saw.
+///
+/// Sessions whose source vanished are archived, not deleted: this index is the
+/// long-term home for sessions whose source agent has already expired them
+/// (Claude's `cleanupPeriodDays`, ~30 days). Archiving an agent's sessions
+/// requires that agent to have produced at least one record this run, so a
+/// source that is merely unreadable — whether it errors or just resolves to an
+/// empty/missing root (moved mount, changed path, permissions blip) — leaves
+/// its sessions untouched rather than misflagging them all as gone. A
+/// previously archived session whose source reappears is un-archived, making
+/// the flag self-healing.
+fn reconcile_archive_state(
+    conn: &Connection,
+    known: &HashMap<(AgentKind, String), KnownRow>,
+    seen_by_agent: &HashMap<AgentKind, HashSet<String>>,
+    now: i64,
+) -> Result<(u32, u32)> {
+    let mut archived = 0u32;
+    let mut unarchived = 0u32;
+    for ((kind, id), row) in known {
+        let agent_seen = seen_by_agent.get(kind);
+        let seen = agent_seen.map(|seen| seen.contains(id)).unwrap_or(false);
+        // Only archive when the agent proved its source is readable this run by
+        // returning at least one session; an empty result is treated as "source
+        // unavailable", not "everything vanished".
+        let source_readable = agent_seen.map(|seen| !seen.is_empty()).unwrap_or(false);
+        if seen {
+            if row.archived {
+                conn.execute(
+                    "UPDATE sessions SET archived_at = NULL WHERE agent = ?1 AND session_id = ?2",
+                    params![kind.as_str(), id],
+                )?;
+                unarchived += 1;
+            }
+        } else if source_readable && !row.archived {
+            conn.execute(
+                "UPDATE sessions SET archived_at = ?3 WHERE agent = ?1 AND session_id = ?2",
+                params![kind.as_str(), id, now],
+            )?;
+            archived += 1;
+        }
+    }
+    Ok((archived, unarchived))
+}
+
+/// Remove archived sessions (those whose source has vanished) from the index.
+///
+/// With `older_than_secs`, only archived rows whose `archived_at` is at least
+/// that many seconds in the past are removed; `None` removes every archived
+/// session. Live sessions are never touched. Returns the number of rows
+/// deleted.
+pub fn prune_archived(conn: &Connection, older_than_secs: Option<i64>) -> Result<u32> {
+    let deleted = match older_than_secs {
+        Some(secs) => {
+            let cutoff = now_unix_secs() - secs;
+            conn.execute(
+                "DELETE FROM sessions WHERE archived_at IS NOT NULL AND archived_at <= ?1",
+                params![cutoff],
+            )?
+        }
+        None => conn.execute("DELETE FROM sessions WHERE archived_at IS NOT NULL", [])?,
+    };
+    Ok(deleted as u32)
 }
 
 fn replace_messages(conn: &Connection, session_id: &str, messages: &[SourceMessage]) -> Result<()> {
@@ -303,6 +381,167 @@ mod tests {
             params![session_id],
         )
         .expect("insert session");
+    }
+
+    fn insert_agent_session(conn: &Connection, agent: AgentKind, session_id: &str) {
+        conn.execute(
+            "INSERT INTO sessions
+               (session_id, agent, cwd, mtime, size, file_path)
+             VALUES (?1, ?2, '/cwd', 0, 0, '/f')",
+            params![session_id, agent.as_str()],
+        )
+        .expect("insert agent session");
+    }
+
+    fn set_archived(conn: &Connection, session_id: &str, archived_at: i64) {
+        conn.execute(
+            "UPDATE sessions SET archived_at = ?2 WHERE session_id = ?1",
+            params![session_id, archived_at],
+        )
+        .expect("set archived");
+    }
+
+    fn archived_at(conn: &Connection, session_id: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT archived_at FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .expect("archived_at")
+    }
+
+    fn known_row(mtime: i64, size: i64, archived: bool) -> KnownRow {
+        KnownRow {
+            mtime,
+            size,
+            archived,
+        }
+    }
+
+    #[test]
+    fn reconcile_archives_vanished_session() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "s1");
+        insert_agent_session(&conn, AgentKind::Claude, "still_here");
+
+        let mut known = HashMap::new();
+        known.insert(
+            (AgentKind::Claude, "s1".to_string()),
+            known_row(0, 0, false),
+        );
+        // The agent also returned a live session this run, proving the source is
+        // readable, so the vanished `s1` is safe to archive.
+        let mut seen_by_agent: HashMap<AgentKind, HashSet<String>> = HashMap::new();
+        seen_by_agent.insert(AgentKind::Claude, HashSet::from(["still_here".to_string()]));
+
+        let (archived, unarchived) =
+            reconcile_archive_state(&conn, &known, &seen_by_agent, 1000).unwrap();
+
+        assert_eq!((archived, unarchived), (1, 0));
+        assert_eq!(archived_at(&conn, "s1"), Some(1000));
+    }
+
+    #[test]
+    fn reconcile_skips_archive_when_agent_scan_is_empty() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "s1");
+
+        let mut known = HashMap::new();
+        known.insert(
+            (AgentKind::Claude, "s1".to_string()),
+            known_row(0, 0, false),
+        );
+        // Source resolved to an empty/missing root this run (e.g. unmounted):
+        // a successful-but-empty scan must not archive everything.
+        let mut seen_by_agent: HashMap<AgentKind, HashSet<String>> = HashMap::new();
+        seen_by_agent.insert(AgentKind::Claude, HashSet::new());
+
+        let (archived, unarchived) =
+            reconcile_archive_state(&conn, &known, &seen_by_agent, 1000).unwrap();
+
+        assert_eq!((archived, unarchived), (0, 0));
+        assert_eq!(archived_at(&conn, "s1"), None);
+    }
+
+    #[test]
+    fn reconcile_unarchives_reappeared_session() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "s1");
+        set_archived(&conn, "s1", 500);
+
+        let mut known = HashMap::new();
+        known.insert((AgentKind::Claude, "s1".to_string()), known_row(0, 0, true));
+        let mut seen_by_agent: HashMap<AgentKind, HashSet<String>> = HashMap::new();
+        seen_by_agent.insert(AgentKind::Claude, HashSet::from(["s1".to_string()]));
+
+        let (archived, unarchived) =
+            reconcile_archive_state(&conn, &known, &seen_by_agent, 1000).unwrap();
+
+        assert_eq!((archived, unarchived), (0, 1));
+        assert_eq!(archived_at(&conn, "s1"), None);
+    }
+
+    #[test]
+    fn reconcile_skips_session_from_unscanned_agent() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "s1");
+
+        let mut known = HashMap::new();
+        known.insert(
+            (AgentKind::Claude, "s1".to_string()),
+            known_row(0, 0, false),
+        );
+        // Claude's source errored entirely this run: no entry in seen_by_agent.
+        let seen_by_agent: HashMap<AgentKind, HashSet<String>> = HashMap::new();
+
+        let (archived, unarchived) =
+            reconcile_archive_state(&conn, &known, &seen_by_agent, 1000).unwrap();
+
+        assert_eq!((archived, unarchived), (0, 0));
+        assert_eq!(archived_at(&conn, "s1"), None);
+    }
+
+    #[test]
+    fn prune_archived_removes_only_archived_sessions() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "live");
+        insert_agent_session(&conn, AgentKind::Claude, "gone");
+        set_archived(&conn, "gone", 100);
+
+        let deleted = prune_archived(&conn, None).unwrap();
+
+        assert_eq!(deleted, 1);
+        let remaining: Vec<String> = conn
+            .prepare("SELECT session_id FROM sessions ORDER BY session_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec!["live".to_string()]);
+    }
+
+    #[test]
+    fn prune_archived_respects_age_cutoff() {
+        let conn = open_indexed_db();
+        insert_agent_session(&conn, AgentKind::Claude, "old");
+        insert_agent_session(&conn, AgentKind::Claude, "recent");
+        let now = now_unix_secs();
+        set_archived(&conn, "old", now - 40 * 86_400);
+        set_archived(&conn, "recent", now - 86_400);
+
+        let deleted = prune_archived(&conn, Some(30 * 86_400)).unwrap();
+
+        assert_eq!(deleted, 1);
+        assert!(archived_at(&conn, "recent").is_some());
+        let old_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sessions WHERE session_id = 'old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_exists, 0);
     }
 
     fn fts_count(conn: &Connection, query: &str) -> i64 {

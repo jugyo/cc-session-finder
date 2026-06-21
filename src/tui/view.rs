@@ -199,10 +199,17 @@ struct StatusPart {
 }
 
 fn metadata_line_for_terminal(hit: &Hit, width: u16, term_program: Option<&str>) -> Line<'static> {
-    let mut parts = vec![StatusPart {
+    let mut parts = Vec::new();
+    if hit.archived {
+        parts.push(StatusPart {
+            text: "archived".to_string(),
+            url: None,
+        });
+    }
+    parts.push(StatusPart {
         text: format_age_status(hit.mtime),
         url: None,
-    }];
+    });
 
     let tokens = hit
         .tokens_input
@@ -589,6 +596,7 @@ mod tests {
             tool_error_count: 0,
             thinking_tokens: 0,
             wall_clock_ms: 0,
+            archived: false,
             snippet: None,
             snippet_role: None,
             snippet_message_count: None,
@@ -718,6 +726,18 @@ mod tests {
                 "session-123"
             ]
         );
+    }
+
+    #[test]
+    fn status_line_marks_archived_session() {
+        let mut hit = hit_with_scores(Scores::default());
+        hit.session_id = "session-123".to_string();
+        hit.archived = true;
+
+        let line = metadata_line_for_terminal(&hit, 200, None);
+        let status = line.spans[0].content.as_ref();
+
+        assert!(status.starts_with("archived · "), "{status}");
     }
 
     #[test]

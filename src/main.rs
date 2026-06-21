@@ -49,6 +49,8 @@ enum Cmd {
     Show(ShowArgs),
     /// Update the index (incremental by default).
     Index(IndexArgs),
+    /// Remove archived sessions (whose source transcript has vanished).
+    Prune(PruneArgs),
     /// Resume a session by id with its native agent CLI.
     Resume(ResumeArgs),
     /// MCP-shaped session queries (debug harness for the MCP server).
@@ -247,6 +249,14 @@ struct IndexArgs {
 }
 
 #[derive(Debug, Args)]
+struct PruneArgs {
+    /// Only remove sessions archived at least this long ago, e.g. "30d", "12w".
+    /// Omit to remove every archived session.
+    #[arg(long)]
+    older_than: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct ResumeArgs {
     session_id: String,
 }
@@ -274,6 +284,7 @@ fn main() -> ExitCode {
         Some(Cmd::List(args)) => cli::run_list(args, cli.reindex, cli.explain),
         Some(Cmd::Show(args)) => cli::run_show(args),
         Some(Cmd::Index(args)) => cli::run_index(args, cli.reindex),
+        Some(Cmd::Prune(args)) => cli::run_prune(args),
         Some(Cmd::Resume(args)) => cli::run_resume(args),
         Some(Cmd::Sessions(args)) => cli::run_sessions(args.command),
         Some(Cmd::Mcp) => mcp::run(),

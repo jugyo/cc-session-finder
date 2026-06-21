@@ -87,6 +87,7 @@ cc-session-finder resume 022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 cc-session-finder resume codex:022d82ca-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 cc-session-finder index
 cc-session-finder index --reindex --progress-json
+cc-session-finder prune --older-than 30d
 ```
 
 `--format` accepts `json` (default), `tsv`, or `ids`. JSON includes the agent,
@@ -111,6 +112,32 @@ the automatic update.
 | -- | -- |
 | `--reindex` | Reparse every source session and rebuild indexed rows |
 | `--reset` | Delete the DB file outright; rarely needed and more destructive |
+
+### Archived sessions
+
+Source agents expire their own transcripts after a while (Claude Code's
+`cleanupPeriodDays` defaults to ~30 days). So that those sessions stay
+searchable here long after the source is gone, indexing never deletes a session
+whose source file has vanished — it **archives** it instead. Archived sessions
+keep showing up in `search` / `list` (the TUI tags them `archived`, and the JSON
+results carry `"archived": true`), but they can no longer be resumed: pressing
+Enter or running `resume` on one reports a clear error rather than launching a
+doomed `claude --resume`.
+
+Archiving is reversible: if a source that was only temporarily unreadable
+(a moved mount, a changed path, a permissions blip) reappears on a later scan,
+its session is automatically un-archived. A scan that fails to read a source
+entirely leaves that source's sessions untouched rather than archiving them.
+
+To reclaim space, prune archived sessions explicitly:
+
+```sh
+cc-session-finder prune                 # remove every archived session
+cc-session-finder prune --older-than 30d  # only those archived ≥ 30 days ago
+```
+
+`prune` only ever removes archived (source-missing) sessions; live sessions are
+never touched.
 
 ## MCP server
 

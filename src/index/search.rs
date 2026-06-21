@@ -44,6 +44,9 @@ pub struct Hit {
     pub tool_error_count: u64,
     pub thinking_tokens: u64,
     pub wall_clock_ms: i64,
+    /// The source transcript has vanished (e.g. the agent expired it); the
+    /// session is retained for search but can no longer be resumed.
+    pub archived: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,6 +320,7 @@ fn metadata_hits(
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                     s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
                     s.tool_call_count, s.tool_error_count, s.thinking_tokens, s.wall_clock_ms,
+                    s.archived_at,
                     bm25(sessions_fts, 1.5, 3.0, 0.8) AS bm25_rank
              FROM sessions_fts JOIN sessions s ON s.rowid = sessions_fts.rowid
              WHERE sessions_fts MATCH ?"
@@ -348,6 +352,7 @@ fn metadata_hits(
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 agent, native_session_id, source_group, model, models_json,
                 tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms,
+                archived_at,
                 bm25_rank, keyword_score, recency, freshness_boost, relevance_score, final_score
          FROM scored
          ORDER BY mtime DESC, bm25_rank ASC, session_id ASC"
@@ -397,6 +402,7 @@ fn message_hits(
                     s.tokens_input, s.tokens_output, s.tokens_cache_read, s.tokens_cache_create,
                     s.agent, s.native_session_id, s.source_group, s.model, s.models_json,
                     s.tool_call_count, s.tool_error_count, s.thinking_tokens, s.wall_clock_ms,
+                    s.archived_at,
                     bm25(messages_fts) AS rank,
                     m.role,
                     m.turn_index,
@@ -421,6 +427,7 @@ fn message_hits(
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
                 agent, native_session_id, source_group, model, models_json,
                 tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms,
+                archived_at,
                 rank, role, snippet, recency, 1.0 + recency * {FRESHNESS_BOOST_WEIGHT} AS freshness_boost
          FROM scored
          ORDER BY rank ASC, mtime DESC, session_id ASC, turn_index ASC",
@@ -526,9 +533,10 @@ const HIT_COLS: &str = "session_id, ai_title, cwd, mtime, msg_count, first_promp
      git_branch, pr_number, pr_url, pr_repo, \
      tokens_input, tokens_output, tokens_cache_read, tokens_cache_create, \
      agent, native_session_id, source_group, model, models_json, \
-     tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms";
+     tool_call_count, tool_error_count, thinking_tokens, wall_clock_ms, archived_at";
 
-const HIT_COL_COUNT: usize = 24;
+const HIT_COL_COUNT: usize = 25;
+const COL_ARCHIVED_AT: usize = 24;
 const COL_BM25_RANK: usize = HIT_COL_COUNT;
 const COL_KEYWORD_SCORE: usize = HIT_COL_COUNT + 1;
 const COL_RECENCY: usize = HIT_COL_COUNT + 2;
@@ -591,6 +599,11 @@ fn map_hit(r: &rusqlite::Row<'_>) -> rusqlite::Result<Hit> {
         tool_error_count: r.get::<_, i64>(21).unwrap_or(0).max(0) as u64,
         thinking_tokens: r.get::<_, i64>(22).unwrap_or(0).max(0) as u64,
         wall_clock_ms: r.get::<_, i64>(23).unwrap_or(0),
+        archived: r
+            .get::<_, Option<i64>>(COL_ARCHIVED_AT)
+            .ok()
+            .flatten()
+            .is_some(),
         snippet: None,
         snippet_role: None,
         snippet_message_count: None,
@@ -1236,6 +1249,30 @@ mod tests {
             "{:?}",
             hit.snippet
         );
+    }
+
+    #[test]
+    fn list_and_search_report_archived_flag() {
+        let conn = open_indexed_db();
+        insert_session(&conn, "live", "/repo", None, Some("archivequery body"));
+        insert_session(&conn, "gone", "/repo", None, Some("archivequery body"));
+        conn.execute(
+            "UPDATE sessions SET archived_at = 123 WHERE session_id = 'gone'",
+            [],
+        )
+        .unwrap();
+
+        let hits = list(&conn, None, false, None, 10).unwrap();
+        let live = hits.iter().find(|h| h.session_id == "live").expect("live");
+        let gone = hits.iter().find(|h| h.session_id == "gone").expect("gone");
+        assert!(!live.archived);
+        assert!(gone.archived);
+
+        let hits = text_search(&conn, "archivequery", None, false, 10).unwrap();
+        let gone = hits.iter().find(|h| h.session_id == "gone").expect("gone");
+        assert!(gone.archived);
+        let json = serde_json::to_value(gone).unwrap();
+        assert_eq!(json["archived"], true);
     }
 
     #[test]

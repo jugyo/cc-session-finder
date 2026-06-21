@@ -15,7 +15,8 @@ use crate::sessions::{
     TrajectoryParams,
 };
 use crate::{
-    Format, IndexArgs, ListArgs, OrderArg, ResumeArgs, SearchArgs, SessionsCmd, ShowArgs, SortByArg,
+    Format, IndexArgs, ListArgs, OrderArg, PruneArgs, ResumeArgs, SearchArgs, SessionsCmd,
+    ShowArgs, SortByArg,
 };
 
 #[derive(Serialize)]
@@ -145,10 +146,24 @@ pub fn run_index(args: IndexArgs, reindex_top: bool) -> Result<ExitCode> {
         index::ingest::scan_and_update(&mut conn, args.reindex || reindex_top, progress.as_ref())?;
     if !args.quiet && !args.progress_json {
         eprintln!(
-            "indexed {} files (upserted {}, deleted {}, total {})",
-            stats.indexed, stats.upserted, stats.deleted, stats.total
+            "indexed {} files (upserted {}, archived {}, unarchived {}, total {})",
+            stats.indexed, stats.upserted, stats.archived, stats.unarchived, stats.total
         );
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn run_prune(args: PruneArgs) -> Result<ExitCode> {
+    let older_than = match args.older_than.as_deref() {
+        Some(value) => Some(
+            parse_duration(value)
+                .with_context(|| format!("invalid --older-than value {value:?}"))?,
+        ),
+        None => None,
+    };
+    let conn = index::open()?;
+    let removed = index::ingest::prune_archived(&conn, older_than)?;
+    eprintln!("pruned {removed} archived session(s)");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -358,7 +373,7 @@ fn parse_duration(s: &str) -> Option<i64> {
         "w" => 86_400 * 7,
         _ => return None,
     };
-    Some(n * mult)
+    n.checked_mul(mult)
 }
 
 pub(crate) fn parse_time_range(since: Option<&str>, until: Option<&str>) -> Result<TimeRange> {
@@ -449,6 +464,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_duration_rejects_overflow() {
+        assert_eq!(parse_duration("7d"), Some(7 * 86_400));
+        assert_eq!(parse_duration("99999999999999999d"), None);
+    }
+
+    #[test]
     fn rejects_inverted_time_range() {
         let err = parse_time_range_at(Some("1d"), Some("7d"), 1_000_000).unwrap_err();
 
@@ -478,8 +499,8 @@ impl Progress for StderrProgress {
     }
     fn on_done(&self, s: &IngestStats) {
         eprintln!(
-            "done: upserted={} deleted={} total={}",
-            s.upserted, s.deleted, s.total
+            "done: upserted={} archived={} unarchived={} total={}",
+            s.upserted, s.archived, s.unarchived, s.total
         );
     }
 }
@@ -508,7 +529,8 @@ impl Progress for JsonProgress {
             io::stderr(),
             "{}",
             serde_json::json!({
-                "event":"done","upserted":s.upserted,"deleted":s.deleted,"total":s.total
+                "event":"done","upserted":s.upserted,
+                "archived":s.archived,"unarchived":s.unarchived,"total":s.total
             })
         );
     }

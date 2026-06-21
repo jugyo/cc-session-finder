@@ -28,7 +28,24 @@ pub(crate) fn resume_command(hit: &Hit) -> ResumeCommand {
     }
 }
 
+/// Reject resume attempts on sessions whose source transcript no longer exists.
+///
+/// The native `claude --resume` / `codex resume` commands read the original
+/// transcript, so resuming an archived (source-missing) session would fail with
+/// an opaque agent-side error. Surface a clear message here instead.
+pub(crate) fn ensure_resumable(hit: &Hit) -> Result<()> {
+    if hit.archived || !PathBuf::from(&hit.file_path).exists() {
+        anyhow::bail!(
+            "session {} is archived: its source transcript no longer exists, so it cannot be resumed",
+            hit.session_id
+        );
+    }
+    Ok(())
+}
+
 pub fn resume(hit: &Hit) -> Result<()> {
+    ensure_resumable(hit)?;
+
     let cwd = PathBuf::from(&hit.cwd);
     if cwd.is_dir() {
         std::env::set_current_dir(&cwd).with_context(|| format!("chdir {}", cwd.display()))?;
@@ -75,6 +92,7 @@ mod tests {
             tool_error_count: 0,
             thinking_tokens: 0,
             wall_clock_ms: 0,
+            archived: false,
             snippet: None,
             snippet_role: None,
             snippet_message_count: None,
@@ -91,6 +109,38 @@ mod tests {
                 args: vec!["--resume".to_string(), "native-123".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn ensure_resumable_rejects_archived_session() {
+        let mut h = hit(AgentKind::Claude, "native-123");
+        h.archived = true;
+
+        let err = ensure_resumable(&h).unwrap_err();
+        assert!(err.to_string().contains("archived"));
+    }
+
+    #[test]
+    fn ensure_resumable_rejects_missing_source() {
+        let mut h = hit(AgentKind::Claude, "native-123");
+        h.archived = false;
+        h.file_path = "/nonexistent/path/session.jsonl".to_string();
+
+        assert!(ensure_resumable(&h).is_err());
+    }
+
+    #[test]
+    fn ensure_resumable_allows_existing_source() {
+        let path = std::env::temp_dir().join(format!("ccsf-resume-{}.jsonl", std::process::id()));
+        std::fs::write(&path, b"{}").expect("write temp transcript");
+
+        let mut h = hit(AgentKind::Claude, "native-123");
+        h.archived = false;
+        h.file_path = path.to_string_lossy().into_owned();
+
+        assert!(ensure_resumable(&h).is_ok());
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
