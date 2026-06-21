@@ -53,6 +53,10 @@ pub struct IndexableMessage {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrajectoryStep {
     pub step_index: u32,
+    /// 0-based position of this step within its autonomous run — the count of
+    /// steps since the last human turn. 0 marks the first action taken right
+    /// after human input; a higher value means a longer uninterrupted run.
+    pub autonomous_run_index: u32,
     pub role: String,
     pub tool_name: Option<String>,
     pub tool_input: Option<String>,
@@ -365,10 +369,14 @@ fn build_trajectory(records: &[Value], store_tool_results: bool) -> Vec<Trajecto
     let mut steps: Vec<TrajectoryStep> = Vec::new();
     let mut counted_usage_ids: HashSet<String> = HashSet::new();
     let mut group_start = 0usize;
+    // Steps emitted since the last human turn. Reset to 0 on each human turn so
+    // that every step records its 0-based position within its autonomous run.
+    let mut run: u32 = 0;
 
     while group_start < records.len() {
         let record = &records[group_start];
         let ty = record.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let before = steps.len();
 
         match ty {
             "assistant" if is_api_error_record(record) => {
@@ -389,7 +397,19 @@ fn build_trajectory(records: &[Value], store_tool_results: bool) -> Vec<Trajecto
                 steps.push(compaction_step(record));
                 group_start += 1;
             }
-            _ => group_start += 1,
+            _ => {
+                // A real human turn resets the autonomous run; tool_result and
+                // other non-human user records do not.
+                if is_human_turn(record) {
+                    run = 0;
+                }
+                group_start += 1;
+            }
+        }
+
+        for step in &mut steps[before..] {
+            step.autonomous_run_index = run;
+            run += 1;
         }
     }
 
@@ -780,6 +800,14 @@ fn content_blocks(content: &Value, block_type: &str) -> u64 {
         .count() as u64
 }
 
+/// A real human turn: a `user` record carrying human-visible text. This matches
+/// exactly the `user` rows stored in `messages`, so run boundaries line up with
+/// the human turns counted elsewhere. Tool-result and other synthetic `user`
+/// records carry no conversation text and are not human turns.
+fn is_human_turn(v: &Value) -> bool {
+    matches!(indexable_message_text(v), Some((role, _)) if role == "user")
+}
+
 fn indexable_message_text(v: &Value) -> Option<(String, String)> {
     let ty = v.get("type").and_then(|t| t.as_str())?;
     if ty != "user" && ty != "assistant" {
@@ -998,6 +1026,45 @@ mod tests {
 
     fn trajectory(lines: &[Value]) -> Vec<TrajectoryStep> {
         build_trajectory(lines, false)
+    }
+
+    #[test]
+    fn autonomous_run_index_resets_on_human_turn() {
+        let assistant = |id: &str, tool: &str| {
+            json!({"type":"assistant","message":{"id":id,"content":[
+                {"type":"tool_use","id":tool,"name":"Bash","input":{"cmd":"x"}}]}})
+        };
+        let human = |text: &str| json!({"type":"user","message":{"role":"user","content":text}});
+        // tool_result user record: must NOT reset the run.
+        let tool_result = json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"a1","content":"ok"}]}});
+
+        let steps = trajectory(&[
+            human("first prompt"),
+            assistant("m1", "a1"),
+            tool_result,
+            assistant("m2", "a2"),
+            human("second prompt"),
+            assistant("m3", "a3"),
+        ]);
+
+        let runs: Vec<u32> = steps.iter().map(|s| s.autonomous_run_index).collect();
+        // run 1: two assistant steps (the tool_result is not a step and does not
+        // reset); run 2: resets to 0 after the second human turn.
+        assert_eq!(runs, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn autonomous_run_index_counts_leading_run_without_human_turn() {
+        let steps = trajectory(&[
+            json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"tool_use","id":"t1","name":"Read","input":{}}]}}),
+            json!({"type":"assistant","message":{"id":"m2","content":[
+                {"type":"tool_use","id":"t2","name":"Edit","input":{}}]}}),
+        ]);
+
+        let runs: Vec<u32> = steps.iter().map(|s| s.autonomous_run_index).collect();
+        assert_eq!(runs, vec![0, 1]);
     }
 
     #[test]

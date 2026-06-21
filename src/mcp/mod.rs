@@ -15,9 +15,10 @@ use serde::Deserialize;
 
 use crate::index;
 use crate::sessions::{
-    self, InefficientParams, InefficientSessionsResponse, InefficientSort, MessageOrder,
-    MessageSearchResponse, MessagesParams, MessagesResponse, OverviewResponse, SearchParams,
-    SearchResponse, TrajectoryParams, TrajectoryResponse,
+    self, AutonomyParams, AutonomySessionsResponse, AutonomySort, InefficientParams,
+    InefficientSessionsResponse, InefficientSort, MessageOrder, MessageSearchResponse,
+    MessagesParams, MessagesResponse, OverviewResponse, SearchParams, SearchResponse,
+    TrajectoryParams, TrajectoryResponse,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -108,6 +109,20 @@ struct FindInefficientSessionsInput {
     limit: Option<usize>,
     /// Ranking signal: "billable_tokens" (default), "error_rate", or
     /// "cache_read_ratio".
+    #[serde(default)]
+    sort_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = crate::sessions::models::strip_int_formats)]
+struct FindAutonomousSessionsInput {
+    /// Lower mtime bound: a duration like "7d", a date, RFC3339, or Unix time.
+    #[serde(default)]
+    since: Option<String>,
+    /// Max sessions to return (default 20, capped at 100).
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Ranking signal: "max_run" (default), "mean_run", or "p90_run".
     #[serde(default)]
     sort_by: Option<String>,
 }
@@ -287,6 +302,31 @@ impl SessionsServer {
         .await?;
         Ok(Json(response))
     }
+
+    #[tool(
+        name = "find_autonomous_sessions",
+        description = "Rank indexed Claude sessions by autonomy: how long the agent runs uninterrupted between human turns. An autonomous run is a maximal stretch of trajectory steps with no human turn; sort_by max_run (default, longest run), mean_run, or p90_run. Each result includes run_count, total_steps, and tool_call_count as task-size indicators so autonomy can be compared within a size band. Counts only, no message text."
+    )]
+    async fn find_autonomous_sessions(
+        &self,
+        Parameters(input): Parameters<FindAutonomousSessionsInput>,
+    ) -> Result<Json<AutonomySessionsResponse>, String> {
+        let response = with_db(move |conn| {
+            index::ingest::scan_and_update(conn, false, &index::ingest::NoopProgress)?;
+            let time_range = crate::cli::parse_time_range(input.since.as_deref(), None)?;
+            let sort_by = AutonomySort::parse(input.sort_by.as_deref())?;
+            sessions::find_autonomous_sessions(
+                conn,
+                AutonomyParams {
+                    since: time_range.since,
+                    limit: input.limit,
+                    sort_by,
+                },
+            )
+        })
+        .await?;
+        Ok(Json(response))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -299,9 +339,10 @@ impl ServerHandler for SessionsServer {
              get_session_overview for a summary, and get_session_messages or \
              search_session_messages to read deeper. Use find_inefficient_sessions \
              to rank sessions by efficiency outliers (billable tokens, tool-error \
-             rate, cache-read ratio), then get_session_trajectory to drill into the \
-             step-by-step tool calls, token attribution, and errors of one session. \
-             Session ids are opaque handles.",
+             rate, cache-read ratio), or find_autonomous_sessions to rank by how \
+             long the agent runs uninterrupted between human turns (autonomy), then \
+             get_session_trajectory to drill into the step-by-step tool calls, token \
+             attribution, and errors of one session. Session ids are opaque handles.",
             )
     }
 }

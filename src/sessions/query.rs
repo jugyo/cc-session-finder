@@ -175,6 +175,61 @@ pub fn efficiency_rows(conn: &Connection, since: Option<i64>) -> Result<Vec<Effi
     rows.collect::<Result<_, _>>().map_err(Into::into)
 }
 
+/// One autonomous run: a maximal stretch of trajectory steps between human
+/// turns. Carries the owning session's metadata (constant per session) plus the
+/// run's length in steps.
+pub struct AutonomyRunRow {
+    pub session_id: String,
+    pub agent: String,
+    pub ai_title: Option<String>,
+    pub cwd: String,
+    pub mtime: i64,
+    pub tool_call_count: u64,
+    pub run_len: u32,
+}
+
+/// Fetch every autonomous run (one row per run) for Claude sessions, optionally
+/// restricted to those updated at or after `since`. Runs are delimited by
+/// `autonomous_run_index = 0`; each run's length is its step count.
+pub fn autonomy_run_rows(conn: &Connection, since: Option<i64>) -> Result<Vec<AutonomyRunRow>> {
+    let mut sql = String::from(
+        "WITH runs AS (
+             SELECT t.session_id, s.agent, s.ai_title, s.cwd, s.mtime, s.tool_call_count,
+                    sum(CASE WHEN t.autonomous_run_index = 0 THEN 1 ELSE 0 END)
+                      OVER (PARTITION BY t.session_id ORDER BY t.step_index
+                            ROWS UNBOUNDED PRECEDING) AS run_no
+             FROM trajectory t JOIN sessions s ON s.session_id = t.session_id
+             WHERE t.agent = 'claude'",
+    );
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(since) = since {
+        sql.push_str(" AND s.mtime >= ?1");
+        bound.push(Box::new(since));
+    }
+    sql.push_str(
+        "
+         )
+         SELECT session_id, agent, ai_title, cwd, mtime, tool_call_count, count(*) AS run_len
+         FROM runs
+         GROUP BY session_id, run_no",
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_iter: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(params_iter.as_slice(), |r| {
+        Ok(AutonomyRunRow {
+            session_id: r.get(0)?,
+            agent: r.get(1)?,
+            ai_title: r.get(2)?,
+            cwd: r.get(3)?,
+            mtime: r.get(4)?,
+            tool_call_count: r.get::<_, i64>(5).unwrap_or(0).max(0) as u64,
+            run_len: r.get::<_, i64>(6)?.max(0) as u32,
+        })
+    })?;
+    rows.collect::<Result<_, _>>().map_err(Into::into)
+}
+
 /// Read up to `limit` trajectory steps for a session ordered by `step_index`,
 /// optionally starting after a given index. Returns the page plus whether more
 /// steps follow it. Long tool input / result text is capped for the wire.

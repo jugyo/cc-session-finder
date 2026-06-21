@@ -79,6 +79,8 @@ enum SessionsCmd {
     SearchMessages(SessionsSearchMessagesArgs),
     /// Rank sessions by an efficiency signal to surface outliers.
     Inefficient(SessionsInefficientArgs),
+    /// Rank sessions by autonomous run length (autonomy signal).
+    Autonomy(SessionsAutonomyArgs),
     /// Page through the step-level trajectory of one session.
     Trajectory(SessionsTrajectoryArgs),
 }
@@ -188,6 +190,28 @@ enum SortByArg {
     BillableTokens,
     ErrorRate,
     CacheReadRatio,
+}
+
+#[derive(Debug, Args)]
+struct SessionsAutonomyArgs {
+    /// Ranking signal: longest run, mean run, or p90 run length.
+    #[arg(long, value_enum, default_value_t = AutonomySortArg::MaxRun)]
+    sort_by: AutonomySortArg,
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// Lower mtime bound, e.g. "7d", "2026-05-01", or RFC3339
+    #[arg(long, visible_alias = "from")]
+    since: Option<String>,
+    #[arg(long)]
+    no_update: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[allow(clippy::enum_variant_names)]
+enum AutonomySortArg {
+    MaxRun,
+    MeanRun,
+    P90Run,
 }
 
 #[derive(Debug, Args)]

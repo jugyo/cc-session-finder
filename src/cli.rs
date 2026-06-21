@@ -11,12 +11,12 @@ use crate::index;
 use crate::index::ingest::{IngestStats, Progress};
 use crate::index::search::{Hit, TimeRange};
 use crate::sessions::{
-    self, InefficientParams, InefficientSort, MessageOrder, MessagesParams, SearchParams,
-    TrajectoryParams,
+    self, AutonomyParams, AutonomySort, InefficientParams, InefficientSort, MessageOrder,
+    MessagesParams, SearchParams, TrajectoryParams,
 };
 use crate::{
-    Format, IndexArgs, ListArgs, OrderArg, PruneArgs, ResumeArgs, SearchArgs, SessionsCmd,
-    ShowArgs, SortByArg,
+    AutonomySortArg, Format, IndexArgs, ListArgs, OrderArg, PruneArgs, ResumeArgs, SearchArgs,
+    SessionsCmd, ShowArgs, SortByArg,
 };
 
 #[derive(Serialize)]
@@ -253,6 +253,23 @@ pub fn run_sessions(cmd: SessionsCmd) -> Result<ExitCode> {
                         SortByArg::BillableTokens => InefficientSort::BillableTokens,
                         SortByArg::ErrorRate => InefficientSort::ErrorRate,
                         SortByArg::CacheReadRatio => InefficientSort::CacheReadRatio,
+                    },
+                },
+            )?;
+            print_json(&response)
+        }
+        SessionsCmd::Autonomy(args) => {
+            let conn = maybe_update(false, args.no_update)?;
+            let time_range = parse_time_range(args.since.as_deref(), None)?;
+            let response = sessions::find_autonomous_sessions(
+                &conn,
+                AutonomyParams {
+                    since: time_range.since,
+                    limit: Some(args.limit),
+                    sort_by: match args.sort_by {
+                        AutonomySortArg::MaxRun => AutonomySort::MaxRun,
+                        AutonomySortArg::MeanRun => AutonomySort::MeanRun,
+                        AutonomySortArg::P90Run => AutonomySort::P90Run,
                     },
                 },
             )?;

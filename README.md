@@ -168,11 +168,18 @@ scores.
   outliers. `sort_by` is `billable_tokens` (default), `error_rate` (tool errors
   ÷ tool calls), or `cache_read_ratio` (cache reads ÷ output tokens). Returns
   per-session counts and ratios only — no message text or tool bodies.
+- `find_autonomous_sessions` — rank Claude sessions by **autonomy**: how long the
+  agent runs uninterrupted between human turns. An *autonomous run* is a maximal
+  stretch of trajectory steps with no human turn; `sort_by` is `max_run`
+  (default, longest run), `mean_run`, or `p90_run`. Each result includes
+  `run_count`, `total_steps`, and `tool_call_count` as task-size indicators so
+  autonomy can be compared within a size band. Counts only — no message text.
 - `get_session_trajectory` — page through one session's step-level trajectory
   (one row per tool call, assistant turn, API error, or context-compaction
   event). Each step carries the tool name and input, byte sizes, per-step token
-  attribution, error/sidechain flags, MCP/skill attribution, stop reason, and a
-  derived duration. Use it to drill into *where* a session flagged by
+  attribution, error/sidechain flags, MCP/skill attribution, stop reason, a
+  derived duration, and `autonomous_run_index` (its 0-based position in the
+  current autonomous run). Use it to drill into *where* a session flagged by
   `find_inefficient_sessions` spent its tokens or hit errors.
 
 Session IDs are opaque handles; pass the `id` from a `search_sessions` result to
@@ -208,6 +215,7 @@ cc-session-finder sessions overview <id>
 cc-session-finder sessions messages <id> --order asc --limit 10
 cc-session-finder sessions search-messages <id> "schema" --limit 10
 cc-session-finder sessions inefficient --sort-by cache-read-ratio --limit 20
+cc-session-finder sessions autonomy --sort-by max-run --limit 20
 cc-session-finder sessions trajectory <id> --limit 30
 ```
 
@@ -230,6 +238,23 @@ session totals), and small inefficiency-detection fields: `is_sidechain`,
 `duration_ms` (from the gap to the next step), and `permission_mode`. Read it via
 `get_session_trajectory` or `sessions trajectory`. Codex sessions currently yield
 an empty trajectory.
+
+### Autonomy (autonomous run length)
+
+Each trajectory step also records `autonomous_run_index` — its 0-based position
+within the current *autonomous run*, i.e. the count of steps since the last human
+turn. The index resets to 0 on every human turn (tool results and other
+synthetic records do not reset it), so a run is a maximal stretch of work the
+agent did without human input.
+
+`find_autonomous_sessions` (MCP) / `sessions autonomy` (CLI) aggregate these into
+a per-session autonomy profile: `run_count`, `max_run`, `mean_run`, `p50_run`,
+`p90_run`, plus `total_steps` and `tool_call_count` as task-size indicators.
+Because autonomy scales with task size, compare sessions **within a size band**
+(similar `total_steps`) rather than in absolute terms. `max_run` surfaces the
+single longest burst; `p90_run` is a better signal for *sustained* autonomy
+(a session whose runs are consistently long, not one lucky stretch). Codex
+sessions have no trajectory and so do not appear in autonomy results.
 
 **Tool result bodies are not stored by default** — only `tool_result_bytes` is
 recorded, since result content runs ~45 MB/month (~700 MB/year) here. To capture

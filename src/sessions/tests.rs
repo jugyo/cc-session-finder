@@ -700,3 +700,88 @@ fn inefficient_sort_parse_rejects_unknown() {
     );
     assert!(InefficientSort::parse(Some("bogus")).is_err());
 }
+
+fn insert_autonomy_session(conn: &Connection, session_id: &str, agent: &str, run_lengths: &[u32]) {
+    let tool_calls: i64 = run_lengths.iter().map(|n| *n as i64).sum();
+    conn.execute(
+        "INSERT INTO sessions
+           (session_id, agent, native_session_id, cwd, mtime, size, file_path, tool_call_count)
+         VALUES (?1, ?2, ?3, '/repo', 1000, 0, '/f.jsonl', ?4)",
+        params![
+            session_id,
+            agent,
+            format!("native-{session_id}"),
+            tool_calls
+        ],
+    )
+    .expect("insert autonomy session");
+
+    let mut step_index: i64 = 0;
+    for len in run_lengths {
+        for run_idx in 0..*len {
+            conn.execute(
+                "INSERT INTO trajectory
+                   (session_id, agent, step_index, autonomous_run_index, role, tool_name)
+                 VALUES (?1, ?2, ?3, ?4, 'assistant', 'Bash')",
+                params![session_id, agent, step_index, run_idx as i64],
+            )
+            .expect("insert trajectory step");
+            step_index += 1;
+        }
+    }
+}
+
+#[test]
+fn find_autonomous_sessions_ranks_and_summarizes_runs() {
+    let conn = setup();
+    // s1 runs of length 3, 1, 2; s2 runs of length 1, 1.
+    insert_autonomy_session(&conn, "s1", "claude", &[3, 1, 2]);
+    insert_autonomy_session(&conn, "s2", "claude", &[1, 1]);
+    // Codex trajectory must be excluded (out of scope).
+    insert_autonomy_session(&conn, "cdx", "codex", &[5, 5]);
+
+    let by_max = find_autonomous_sessions(
+        &conn,
+        AutonomyParams {
+            since: None,
+            limit: Some(10),
+            sort_by: AutonomySort::MaxRun,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(by_max.sort_by, "max_run");
+    assert!(!by_max.results.iter().any(|s| s.id == "cdx"));
+    let s1 = by_max.results.iter().find(|s| s.id == "s1").expect("s1");
+    assert_eq!(s1.run_count, 3);
+    assert_eq!(s1.total_steps, 6);
+    assert_eq!(s1.tool_call_count, 6);
+    assert_eq!(s1.max_run, 3);
+    assert_eq!(s1.mean_run, 2.0);
+    // run lengths sorted = [1, 2, 3]: p50 (nearest-rank) = 2, p90 = 3.
+    assert_eq!(s1.p50_run, 2);
+    assert_eq!(s1.p90_run, 3);
+    // s1 (max_run 3) ranks before s2 (max_run 1).
+    assert_eq!(by_max.results[0].id, "s1");
+
+    let by_mean = find_autonomous_sessions(
+        &conn,
+        AutonomyParams {
+            since: None,
+            limit: Some(10),
+            sort_by: AutonomySort::MeanRun,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_mean.results[0].id, "s1");
+}
+
+#[test]
+fn autonomy_sort_parse_rejects_unknown() {
+    assert_eq!(AutonomySort::parse(None).unwrap(), AutonomySort::MaxRun);
+    assert_eq!(
+        AutonomySort::parse(Some("mean_run")).unwrap(),
+        AutonomySort::MeanRun
+    );
+    assert!(AutonomySort::parse(Some("bogus")).is_err());
+}

@@ -19,9 +19,9 @@ use crate::agent::AgentKind;
 use crate::index::search::{self, Hit, TimeRange};
 
 pub use models::{
-    InefficientSession, InefficientSessionsResponse, MessageSearchResponse, MessagesResponse,
-    OverviewResponse, OverviewSession, SearchResponse, SessionCard, SessionMessage, SessionRef,
-    TrajectoryResponse,
+    AutonomySession, AutonomySessionsResponse, InefficientSession, InefficientSessionsResponse,
+    MessageSearchResponse, MessagesResponse, OverviewResponse, OverviewSession, SearchResponse,
+    SessionCard, SessionMessage, SessionRef, TrajectoryResponse,
 };
 pub use query::MessageOrder;
 
@@ -98,6 +98,46 @@ pub struct InefficientParams {
     pub since: Option<i64>,
     pub limit: Option<usize>,
     pub sort_by: InefficientSort,
+}
+
+/// Sort key for [`find_autonomous_sessions`]. The shared `Run` suffix is
+/// intentional — every variant ranks a run-length statistic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub enum AutonomySort {
+    MaxRun,
+    MeanRun,
+    P90Run,
+}
+
+impl AutonomySort {
+    /// Parse a `sort_by` string, defaulting to `MaxRun` when absent.
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim) {
+            None | Some("") | Some("max_run") => Ok(Self::MaxRun),
+            Some("mean_run") => Ok(Self::MeanRun),
+            Some("p90_run") => Ok(Self::P90Run),
+            Some(other) => {
+                bail!("invalid sort_by {other:?}; expected max_run, mean_run, or p90_run")
+            }
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxRun => "max_run",
+            Self::MeanRun => "mean_run",
+            Self::P90Run => "p90_run",
+        }
+    }
+}
+
+/// Inputs for [`find_autonomous_sessions`].
+#[derive(Debug, Clone)]
+pub struct AutonomyParams {
+    pub since: Option<i64>,
+    pub limit: Option<usize>,
+    pub sort_by: AutonomySort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +319,88 @@ pub fn find_inefficient_sessions(
         sort_by: params.sort_by.as_str().to_string(),
         results: sessions,
     })
+}
+
+/// Rank sessions by how long the agent runs autonomously between human turns.
+pub fn find_autonomous_sessions(
+    conn: &Connection,
+    params: AutonomyParams,
+) -> Result<AutonomySessionsResponse> {
+    let limit = cap_limit(params.limit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_CAP);
+
+    // Group runs by session, preserving first-seen metadata and the run lengths.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_session: std::collections::HashMap<String, (query::AutonomyRunRow, Vec<u32>)> =
+        std::collections::HashMap::new();
+    for row in query::autonomy_run_rows(conn, params.since)? {
+        let entry = by_session.entry(row.session_id.clone());
+        match entry {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                e.get_mut().1.push(row.run_len);
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                order.push(row.session_id.clone());
+                let len = row.run_len;
+                e.insert((row, vec![len]));
+            }
+        }
+    }
+
+    let mut sessions: Vec<AutonomySession> = order
+        .into_iter()
+        .filter_map(|id| by_session.remove(&id))
+        .map(|(meta, mut runs)| {
+            runs.sort_unstable();
+            let run_count = runs.len() as u32;
+            let total_steps: u32 = runs.iter().sum();
+            let max_run = runs.last().copied().unwrap_or(0);
+            let mean_run = total_steps as f64 / run_count.max(1) as f64;
+            AutonomySession {
+                id: meta.session_id,
+                agent: AgentKind::from_db(&meta.agent).unwrap_or(AgentKind::Claude),
+                title: meta.ai_title,
+                cwd: meta.cwd,
+                updated_at: format_updated_at(meta.mtime),
+                run_count,
+                total_steps,
+                tool_call_count: meta.tool_call_count,
+                max_run,
+                mean_run,
+                p50_run: percentile_sorted(&runs, 0.50),
+                p90_run: percentile_sorted(&runs, 0.90),
+            }
+        })
+        .collect();
+
+    sessions.sort_by(|a, b| {
+        let key = |s: &AutonomySession| match params.sort_by {
+            AutonomySort::MaxRun => s.max_run as f64,
+            AutonomySort::MeanRun => s.mean_run,
+            AutonomySort::P90Run => s.p90_run as f64,
+        };
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.total_steps.cmp(&a.total_steps))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    sessions.truncate(limit);
+
+    Ok(AutonomySessionsResponse {
+        count: sessions.len(),
+        sort_by: params.sort_by.as_str().to_string(),
+        results: sessions,
+    })
+}
+
+/// Nearest-rank percentile over an ascending-sorted slice.
+fn percentile_sorted(sorted: &[u32], p: f64) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (p * sorted.len() as f64).ceil() as usize;
+    let idx = rank.saturating_sub(1).min(sorted.len() - 1);
+    sorted[idx]
 }
 
 fn encode_search_cursor(spec: &SearchSpec, offset: usize) -> Result<String> {

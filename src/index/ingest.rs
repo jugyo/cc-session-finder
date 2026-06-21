@@ -246,7 +246,7 @@ fn replace_trajectory(
 
     let mut stmt = conn.prepare(
         "INSERT INTO trajectory
-           (session_id, agent, step_index, role, tool_name, tool_input,
+           (session_id, agent, step_index, autonomous_run_index, role, tool_name, tool_input,
             tool_input_bytes, tool_result_bytes, tool_result, is_error,
             tokens_input, tokens_output, tokens_cache_read, tokens_cache_create,
             timestamp, is_sidechain, context_management,
@@ -254,13 +254,14 @@ fn replace_trajectory(
             stop_reason, attribution_mcp_tool, attribution_mcp_server,
             attribution_skill, duration_ms, permission_mode, parent_uuid)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
+                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
     )?;
     for step in steps {
         stmt.execute(params![
             session_id,
             agent.as_str(),
             step.step_index as i64,
+            step.autonomous_run_index as i64,
             step.role,
             step.tool_name,
             step.tool_input,

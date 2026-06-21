@@ -280,6 +280,42 @@ pub struct InefficientSessionsResponse {
     pub count: usize,
 }
 
+/// Autonomy profile of one session. An *autonomous run* is a maximal stretch of
+/// trajectory steps with no intervening human turn; `run_*` summarize how long
+/// the agent worked uninterrupted. `total_steps` / `tool_call_count` are task-
+/// size indicators so autonomy can be compared within a size band.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
+pub struct AutonomySession {
+    pub id: String,
+    pub agent: AgentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub cwd: String,
+    pub updated_at: String,
+    /// Number of autonomous runs (≈ human turns that drove at least one step).
+    pub run_count: u32,
+    /// Total trajectory steps (task size).
+    pub total_steps: u32,
+    pub tool_call_count: u64,
+    /// Longest uninterrupted run, in steps.
+    pub max_run: u32,
+    /// Mean run length across the session's runs.
+    pub mean_run: f64,
+    /// Median (p50) run length.
+    pub p50_run: u32,
+    /// 90th-percentile run length.
+    pub p90_run: u32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(transform = strip_int_formats)]
+pub struct AutonomySessionsResponse {
+    pub sort_by: String,
+    pub results: Vec<AutonomySession>,
+    pub count: usize,
+}
+
 /// Clamp a requested limit to `[1, max]`, falling back to `default` when not
 /// provided or zero.
 pub(crate) fn cap_limit(requested: Option<usize>, default: usize, max: usize) -> usize {
